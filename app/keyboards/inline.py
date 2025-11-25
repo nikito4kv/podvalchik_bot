@@ -119,10 +119,17 @@ def active_tournaments_kb(tournaments: List[Tournament]) -> InlineKeyboardMarkup
     return builder.as_markup()
 
 
-def view_forecast_kb(back_callback: str) -> InlineKeyboardMarkup:
-    """Creates a keyboard with a dynamic back button."""
+def view_forecast_kb(
+    back_callback: str, forecast_id: int | None = None
+) -> InlineKeyboardMarkup:
+    """Creates a keyboard with a dynamic back button and an optional edit button."""
     builder = InlineKeyboardBuilder()
+    if forecast_id:
+        builder.button(
+            text="✏️ Изменить прогноз", callback_data=f"edit_forecast_start:{forecast_id}"
+        )
     builder.button(text="◀️ Назад к списку", callback_data=back_callback)
+    builder.adjust(2 if forecast_id else 1)
     return builder.as_markup()
 
 

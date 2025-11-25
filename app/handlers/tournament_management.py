@@ -1,4 +1,4 @@
-from aiogram import Router, types, F
+from aiogram import Bot, Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -85,6 +85,37 @@ async def show_remove_participant_menu(cb: types.CallbackQuery, state: FSMContex
         tournament_id=tournament_id, show_back_to_menu=True
     )
     await cb.message.edit_text("Выберите игрока для удаления:", reply_markup=kb)
+
+
+async def notify_predictors_of_change(bot: Bot, session: async_session, tournament: Tournament, changed_player: Player, action: str):
+    """Notifies users who have made a forecast about a change in participants."""
+    if tournament.status != TournamentStatus.OPEN:
+        return # Only notify for open tournaments
+
+    forecasts_res = await session.execute(
+        select(Forecast).where(Forecast.tournament_id == tournament.id)
+    )
+    forecasts = forecasts_res.scalars().all()
+    
+    if not forecasts:
+        return
+
+    action_text = "добавлен в" if action == "added" else "удален из"
+    message_text = (
+        f"Внимание! Участник <b>{changed_player.full_name}</b> был {action_text} турнир «{tournament.name}».\n"
+        "Возможно, вы захотите обновить свой прогноз."
+    )
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Перейти к прогнозу", callback_data=f"view_forecast:{tournament.id}")
+    kb = builder.as_markup()
+
+    for forecast in forecasts:
+        try:
+            await bot.send_message(forecast.user_id, message_text, reply_markup=kb, parse_mode="HTML")
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            logging.warning(f"Failed to send participant change notification to user {forecast.user_id}: {e}")
 
 # --- UI BUILDERS ---
 
@@ -267,6 +298,8 @@ async def cq_add_participant_select(callback: types.CallbackQuery, state: FSMCon
             tournament.participants.append(player)
             await session.commit()
             await callback.answer(f"✅ {player.full_name} добавлен.", show_alert=True)
+            # Notify users
+            await notify_predictors_of_change(callback.bot, session, tournament, player, "added")
         else:
             await callback.answer(f"⚠️ {player.full_name} уже в турнире.", show_alert=True)
     await show_add_participant_menu(callback, state)
@@ -283,17 +316,21 @@ async def msg_add_participant_create_and_add(message: types.Message, state: FSMC
     data = await state.get_data()
     tournament_id = data.get("managed_tournament_id")
     async with async_session() as session:
-        existing_player = await session.scalar(select(Player).where(Player.full_name == new_player_name))
+        existing_player = await session.scalar(select(Player).where(func.lower(Player.full_name) == func.lower(new_player_name)))
         if existing_player:
             await message.answer(f"⚠️ Игрок '{new_player_name}' уже существует. Добавьте его из списка.")
         else:
             new_player = Player(full_name=new_player_name)
             session.add(new_player)
-            await session.flush()
+            await session.flush() # To get the new_player.id
+            
             tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
             tournament.participants.append(new_player)
             await session.commit()
             await message.answer(f"✅ Новый игрок '{new_player_name}' создан и добавлен в турнир.")
+            # Notify users
+            await notify_predictors_of_change(message.bot, session, tournament, new_player, "added")
+
     await show_tournament_menu(message, state, tournament_id)
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_remove_participant_start_"))
@@ -311,12 +348,16 @@ async def cq_remove_participant_select(callback: types.CallbackQuery, state: FSM
     async with async_session() as session:
         tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
         player_to_remove = await session.get(Player, player_id)
+        
         if player_to_remove in tournament.participants:
             tournament.participants.remove(player_to_remove)
             await session.commit()
             await callback.answer(f"✅ {player_to_remove.full_name} удален.", show_alert=True)
+            # Notify users
+            await notify_predictors_of_change(callback.bot, session, tournament, player_to_remove, "removed")
         else:
             await callback.answer(f"⚠️ {player_to_remove.full_name} уже был удален.", show_alert=True)
+            
     await show_remove_participant_menu(callback, state)
 
 

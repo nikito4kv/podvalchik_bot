@@ -10,6 +10,7 @@ from app.keyboards.inline import (
     active_tournaments_kb,
     view_forecast_kb,
     forecast_history_kb,
+    confirmation_kb,
 )
 from app.db.models import User, Tournament, Forecast, TournamentStatus, Player
 from app.db.session import async_session
@@ -209,9 +210,28 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):
             player_name = players.get(player_id, "Неизвестный игрок")
             text += f"{place} {player_name}\n"
 
-        await callback_query.message.edit_text(
-            text, reply_markup=view_forecast_kb(back_callback="forecasts:active")
+        # Show 'Edit' button only for OPEN tournaments
+        kb = (
+            view_forecast_kb(
+                back_callback="forecasts:active", forecast_id=forecast.id
+            )
+            if forecast.tournament.status == TournamentStatus.OPEN
+            else view_forecast_kb(back_callback="forecasts:active")
         )
+
+        await callback_query.message.edit_text(text, reply_markup=kb)
+    await callback_query.answer()
+
+
+@router.callback_query(F.data.startswith("edit_forecast_start:"))
+async def cq_edit_forecast_start(callback_query: types.CallbackQuery):
+    """Asks for confirmation to edit a forecast."""
+    forecast_id = int(callback_query.data.split(":")[1])
+    text = "Вы уверены, что хотите изменить прогноз? Ваш старый прогноз будет заменен только **после сохранения нового**."
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=confirmation_kb(action_prefix=f"edit_confirm:{forecast_id}"),
+    )
     await callback_query.answer()
 
 

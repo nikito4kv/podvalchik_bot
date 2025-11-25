@@ -1,7 +1,7 @@
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, delete
 from sqlalchemy.orm import selectinload
 
 from app.db.models import Tournament, TournamentStatus, Player, Forecast, User
@@ -80,6 +80,58 @@ async def cq_predict_tournament_chosen(callback: types.CallbackQuery, state: FSM
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("edit_confirm:"))
+async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSMContext):
+    """Handles the 'Yes' confirmation to edit a forecast and starts the process."""
+    parts = callback.data.split(":")
+    if len(parts) < 3 or parts[2] != "yes":
+        # Handle 'No' confirmation or invalid format
+        # Attempt to go back to the forecast view
+        try:
+            forecast_id = int(parts[1])
+            # This is a bit of a hack, we need to re-show the previous menu.
+            # For simplicity, we'll just delete the confirmation message.
+            await callback.message.delete()
+            await callback.answer("Редактирование отменено.")
+        except (ValueError, IndexError):
+            await callback.answer("Ошибка отмены.", show_alert=True)
+        return
+
+    forecast_id = int(parts[1])
+
+    async with async_session() as session:
+        # Get the existing forecast to find the tournament
+        forecast = await session.get(
+            Forecast,
+            forecast_id,
+            options=[selectinload(Forecast.tournament).selectinload(Tournament.participants)],
+        )
+        if not forecast or not forecast.tournament:
+            await callback.answer("Турнир для этого прогноза не найден.", show_alert=True)
+            return
+        
+        tournament = forecast.tournament
+        if not tournament.participants:
+            await callback.message.edit_text("В этом турнире пока нет зарегистрированных участников. Прогноз невозможен.")
+            await state.clear()
+            return
+
+    await state.set_state(MakeForecast.making_prediction)
+    await state.update_data(
+        tournament_id=tournament.id,
+        tournament_players={p.id: p.full_name for p in tournament.participants},
+        forecast_list=[],
+        editing_forecast_id=forecast_id,  # Store the ID of the forecast being edited
+    )
+
+    kb = get_paginated_players_kb(players=tournament.participants, action="predict")
+    await callback.message.edit_text(
+        "<b>Шаг 1/5:</b> Выберите, кто, по-вашему, займет <b>1 место</b>:",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
 @router.callback_query(MakeForecast.making_prediction, F.data.startswith("predict:"))
 async def cq_process_prediction_selection(callback: types.CallbackQuery, state: FSMContext):
     player_id = int(callback.data.split(":")[1])
@@ -130,22 +182,37 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     
     # Ensure all data is present
-    if not all(k in data for k in ['tournament_id', 'forecast_list']):
-        await callback.message.edit_text("Произошла ошибка, не вся информация для прогноза найдена. Попробуйте снова.")
+    if not all(k in data for k in ["tournament_id", "forecast_list"]):
+        await callback.message.edit_text(
+            "Произошла ошибка, не вся информация для прогноза найдена. Попробуйте снова."
+        )
         await state.clear()
         return
+
+    editing_forecast_id = data.get("editing_forecast_id")
 
     new_forecast = Forecast(
         user_id=callback.from_user.id,
         tournament_id=data.get("tournament_id"),
-        prediction_data=data.get("forecast_list")
+        prediction_data=data.get("forecast_list"),
     )
 
     async with async_session() as session:
+        if editing_forecast_id:
+            await session.execute(
+                delete(Forecast).where(Forecast.id == editing_forecast_id)
+            )
+        
         session.add(new_forecast)
         await session.commit()
-        await callback.message.edit_text("✅ Ваш прогноз принят!")
-            
+        
+        message = (
+            "✅ Ваш прогноз обновлен!"
+            if editing_forecast_id
+            else "✅ Ваш прогноз принят!"
+        )
+        await callback.message.edit_text(message)
+
     await state.clear()
 
 
