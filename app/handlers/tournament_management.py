@@ -230,7 +230,7 @@ async def cq_list_participants(callback: types.CallbackQuery, state: FSMContext)
     tournament_id = int(callback.data.split("_")[-1])
     async with async_session() as session:
         tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
-    text = f"<b>Участники турнира (ID: {tournament_id})</b>\n\n"
+    text = f"<b>Участники турнира «{tournament.name}»</b>\n\n"
     if not tournament.participants:
         text += "В этом турнире пока нет зарегистрированных участников."
     else:

@@ -209,7 +209,9 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):
             player_name = players.get(player_id, "Неизвестный игрок")
             text += f"{place} {player_name}\n"
 
-        await callback_query.message.edit_text(text, reply_markup=view_forecast_kb())
+        await callback_query.message.edit_text(
+            text, reply_markup=view_forecast_kb(back_callback="forecasts:active")
+        )
     await callback_query.answer()
 
 
@@ -302,7 +304,7 @@ async def show_specific_history(callback_query: types.CallbackQuery):
         text += f"\n<b>💰 Очки за прогноз:</b> {forecast.points_earned or 0}"
 
         await callback_query.message.edit_text(
-            text, reply_markup=view_forecast_kb(page=page)
+            text, reply_markup=view_forecast_kb(back_callback=f"forecasts:history:{page}")
         )
     await callback_query.answer()
 

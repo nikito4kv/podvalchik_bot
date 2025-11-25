@@ -11,7 +11,7 @@ def tournament_selection_kb(tournaments: List[Tournament]) -> InlineKeyboardMark
     builder = InlineKeyboardBuilder()
     for tournament in tournaments:
         builder.button(
-            text=f"ID: {tournament.id} ({tournament.date.strftime('%d.%m.%Y')})",
+            text=f"«{tournament.name}» ({tournament.date.strftime('%d.%m.%Y')})",
             callback_data=f"select_tournament_{tournament.id}",
         )
     builder.adjust(1)
@@ -119,10 +119,10 @@ def active_tournaments_kb(tournaments: List[Tournament]) -> InlineKeyboardMarkup
     return builder.as_markup()
 
 
-def view_forecast_kb(page: int = 0) -> InlineKeyboardMarkup:
-    """Creates a keyboard with a back button to the active forecasts list or history page."""
+def view_forecast_kb(back_callback: str) -> InlineKeyboardMarkup:
+    """Creates a keyboard with a dynamic back button."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="◀️ Назад к списку", callback_data=f"forecasts:history:{page}")
+    builder.button(text="◀️ Назад к списку", callback_data=back_callback)
     return builder.as_markup()
 
 
