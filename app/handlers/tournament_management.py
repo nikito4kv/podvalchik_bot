@@ -380,49 +380,112 @@ async def cq_set_results_confirm(callback: types.CallbackQuery, state: FSMContex
     tournament_id = data.get("managed_tournament_id")
     results_list = data.get("results_list", [])
     results_dict = {player_id: rank + 1 for rank, player_id in enumerate(results_list)}
-    
-    await callback.message.edit_text("⏳ Начинаю расчет очков...")
+
+    await callback.message.edit_text("⏳ Начинаю расчет очков и рассылку...")
+
     async with async_session() as session:
         try:
-            tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.forecasts).selectinload(Forecast.user)])
-            if not tournament: raise ValueError("Турнир не найден.")
-            
+            tournament = await session.get(
+                Tournament,
+                tournament_id,
+                options=[
+                    selectinload(Tournament.forecasts).selectinload(Forecast.user)
+                ],
+            )
+            if not tournament:
+                raise ValueError("Турнир не найден.")
+
+            # --- Data Processing ---
             tournament.status = TournamentStatus.FINISHED
             tournament.results = results_dict
-            
-            users_to_notify = {}
+
+            # Collect all player IDs from results and all forecasts to fetch names in one query
+            all_player_ids = set(results_dict.keys())
             for forecast in tournament.forecasts:
-                points, diffs, exact_hits = calculate_forecast_points(forecast.prediction_data, results_dict)
+                all_player_ids.update(forecast.prediction_data)
+            
+            player_name_map = {}
+            if all_player_ids:
+                players_res = await session.execute(select(Player).where(Player.id.in_(all_player_ids)))
+                player_name_map = {p.id: p.full_name for p in players_res.scalars()}
+
+            # Process each forecast
+            for forecast in tournament.forecasts:
+                points, diffs, exact_hits = calculate_forecast_points(
+                    forecast.prediction_data, results_dict
+                )
                 forecast.points_earned = points
                 user = forecast.user
-                users_to_notify[user.id] = {"points": points, "date": tournament.date}
                 
+                # Update user's global stats
                 user_forecasts_count_res = await session.execute(
                     select(func.count(Forecast.id)).where(Forecast.user_id == user.id)
                 )
                 user_forecasts_count = user_forecasts_count_res.scalar_one()
-                
-                new_total, new_acc, new_mae = calculate_new_stats(user.total_points, user.accuracy_rate, user.avg_error, user_forecasts_count, points, diffs, exact_hits)
+
+                new_total, new_acc, new_mae = calculate_new_stats(
+                    user.total_points, user.accuracy_rate, user.avg_error, user_forecasts_count, points, diffs, exact_hits
+                )
                 user.total_points = new_total
                 user.accuracy_rate = new_acc
                 user.avg_error = new_mae
-            
-            await session.commit()
-            
-            await callback.message.edit_text(f"✅ Расчет завершен! Обработано {len(tournament.forecasts)} прогнозов.")
 
-            for user_id, info in users_to_notify.items():
+            await session.commit()
+
+            # --- Notifications ---
+            await callback.message.edit_text(
+                f"✅ Расчет завершен! Обработано {len(tournament.forecasts)} прогнозов. Начинаю рассылку..."
+            )
+
+            def format_ranking(player_ids, title):
+                medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+                text = f"<b>{title}</b>\n"
+                for i, pid in enumerate(player_ids):
+                    place = medals.get(i, f" {i + 1}.")
+                    player_name = player_name_map.get(pid, "Неизвестный игрок")
+                    text += f"{place} {player_name}\n"
+                return text
+            
+            # Format final results once
+            sorted_results = sorted(results_dict.items(), key=lambda item: item[1])
+            final_results_pids = [item[0] for item in sorted_results]
+            results_text = format_ranking(final_results_pids, "🏆 Итоги турнира:")
+
+            # Notify users
+            for forecast in tournament.forecasts:
                 try:
-                    await callback.bot.send_message(user_id, f"Турнир от {info['date'].strftime('%d.%m.%Y')} завершен!\nВы набрали: <b>{info['points']}</b> очков. Ваша общая статистика обновлена.")
+                    prediction_text = format_ranking(forecast.prediction_data, "📜 Ваш прогноз:")
+                    user_message = (
+                        f"<b>Итоги турнира «{tournament.name}» от {tournament.date.strftime('%d.%m.%Y')}</b>\n\n"
+                        f"{results_text}\n"
+                        f"{prediction_text}\n"
+                        f"<b>💰 Очки за прогноз: {forecast.points_earned or 0}</b>"
+                    )
+                    await callback.bot.send_message(forecast.user_id, user_message)
                     await asyncio.sleep(0.2)
                 except Exception as e:
-                    logging.warning(f"Failed to send notification to user {user_id}: {e}")
-        
+                    logging.warning(
+                        f"Failed to send notification to user {forecast.user_id}: {e}"
+                    )
+            
+            # Notify admin with top forecasters
+            top_forecasters = sorted(tournament.forecasts, key=lambda f: f.points_earned or 0, reverse=True)[:3]
+            admin_summary_text = f"<b>🏆 Топ-3 прогнозистов турнира «{tournament.name}»:</b>\n\n"
+            medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+            for i, forecast in enumerate(top_forecasters):
+                place = medals.get(i, f" {i + 1}.")
+                username = forecast.user.username or f"id:{forecast.user.id}"
+                admin_summary_text += f"{place} @{username} - <b>{forecast.points_earned or 0}</b> очков\n"
+
+            await callback.message.answer(admin_summary_text)
+
         except Exception as e:
             await session.rollback()
-            logging.error(f"Critical error during result confirmation: {e}", exc_info=True)
+            logging.error(
+                f"Critical error during result confirmation: {e}", exc_info=True
+            )
             await callback.message.edit_text(f"❌ Произошла критическая ошибка: {e}")
-    
+
     await state.clear()
     await show_tournament_menu(callback, state, tournament_id)
 
