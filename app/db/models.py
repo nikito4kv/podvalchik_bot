@@ -51,6 +51,7 @@ class Player(Base):
 
 
 class TournamentStatus(enum.Enum):
+    DRAFT = "DRAFT"
     OPEN = "OPEN"
     LIVE = "LIVE"
     FINISHED = "FINISHED"
@@ -62,7 +63,7 @@ class Tournament(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False)
     date = Column(Date, nullable=False)
-    status = Column(Enum(TournamentStatus), default=TournamentStatus.OPEN)
+    status = Column(Enum(TournamentStatus), default=TournamentStatus.DRAFT)
     results = Column(JSON)  # {"player_id": rank}
 
     forecasts = relationship("Forecast", back_populates="tournament")

@@ -137,7 +137,9 @@ def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboar
     builder.button(text="➖ Удалить участника", callback_data=f"tm_remove_participant_start_{tournament_id}")
     builder.button(text="👥 Список участников", callback_data=f"tm_list_participants_{tournament_id}")
 
-    if tournament.status == TournamentStatus.OPEN:
+    if tournament.status == TournamentStatus.DRAFT:
+        builder.button(text="📢 Опубликовать турнир", callback_data=f"tm_publish_{tournament_id}")
+    elif tournament.status == TournamentStatus.OPEN:
         builder.button(text="🔐 Закрыть ставки", callback_data=f"tm_close_bets_{tournament_id}")
     elif tournament.status == TournamentStatus.LIVE:
         builder.button(text="🔓 Открыть ставки", callback_data=f"tm_open_bets_{tournament_id}")
@@ -147,7 +149,7 @@ def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboar
     
     builder.button(text="❌ Удалить турнир", callback_data=f"tm_delete_{tournament_id}")
     builder.button(text="◀️ Назад к списку", callback_data="tm_back_to_list")
-    builder.adjust(2, 1, 2, 1)
+    builder.adjust(2, 1, 1, 2, 1) # Adjust layout
     return builder.as_markup()
 
 
@@ -362,6 +364,23 @@ async def cq_remove_participant_select(callback: types.CallbackQuery, state: FSM
 
 
 # --- TOURNAMENT ACTIONS & SCORING ---
+
+@router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_publish_"))
+async def cq_publish_tournament(callback: types.CallbackQuery, state: FSMContext):
+    tournament_id = int(callback.data.split("_")[-1])
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id)
+        if not tournament:
+            await callback.answer("⚠️ Турнир не найден.", show_alert=True)
+            return
+        if tournament.status != TournamentStatus.DRAFT:
+            await callback.answer(f"⚠️ Этот турнир уже опубликован или начат. Статус: {tournament.status.name}", show_alert=True)
+            return
+        tournament.status = TournamentStatus.OPEN
+        await session.commit()
+        await callback.answer("✅ Турнир опубликован и открыт для прогнозов.", show_alert=True)
+    await show_tournament_menu(callback, state, tournament_id)
+
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_close_bets_"))
 async def cq_close_bets(callback: types.CallbackQuery, state: FSMContext):
