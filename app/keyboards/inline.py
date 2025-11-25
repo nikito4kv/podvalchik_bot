@@ -194,3 +194,69 @@ def cancel_fsm_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data="fsm_cancel")
     return builder.as_markup()
+
+
+def admin_menu_kb() -> InlineKeyboardMarkup:
+    """Main menu for admin tournament management."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🆕 Создать новый турнир", callback_data="tm_create_new")
+    builder.button(text="⚡️ Актуальные", callback_data="tm_group:active")
+    builder.button(text="🏁 Завершенные", callback_data="tm_group:finished")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_paginated_tournaments_kb(
+    tournaments: List[Tournament], status_group: str, page: int = 0, page_size: int = 6
+) -> InlineKeyboardMarkup:
+    """
+    Creates a paginated keyboard for tournaments list.
+    """
+    builder = InlineKeyboardBuilder()
+    total_items = len(tournaments)
+    total_pages = max(1, math.ceil(total_items / page_size))
+    page = max(0, min(page, total_pages - 1))
+
+    start_index = page * page_size
+    end_index = start_index + page_size
+    page_tournaments = tournaments[start_index:end_index]
+
+    for t in page_tournaments:
+        builder.button(
+            text=f"«{t.name}» ({t.date.strftime('%d.%m.%Y')}) - {t.status.name}",
+            callback_data=f"manage_tournament_{t.id}"
+        )
+    builder.adjust(1)
+
+    nav_buttons = []
+    if total_pages > 1:
+        if page > 0:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="◀️", callback_data=f"paginate_tm:{status_group}:{page-1}"
+                )
+            )
+        nav_buttons.append(
+            InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="noop")
+        )
+        if page < total_pages - 1:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="▶️", callback_data=f"paginate_tm:{status_group}:{page+1}"
+                )
+            )
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад", callback_data="tm_back_to_list")
+    )
+    
+    return builder.as_markup()
+
+
+def enter_rating_fsm_kb() -> InlineKeyboardMarkup:
+    """Keyboard for entering a new rating, with a back button."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="↩️ Назад", callback_data="rating:back_to_options")
+    return builder.as_markup()
