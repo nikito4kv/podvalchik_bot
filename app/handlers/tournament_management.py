@@ -202,7 +202,9 @@ from aiogram.filters import Command, StateFilter
         TournamentManagement.choosing_tournament,
         TournamentManagement.adding_participant_choosing_player,
         TournamentManagement.removing_participant_choosing_player,
-        TournamentManagement.managing_tournament
+        TournamentManagement.managing_tournament,
+        SetResults.entering_results,
+        SetResults.confirming_results,
     ),
     F.data.startswith("manage_tournament_")
 )
