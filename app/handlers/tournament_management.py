@@ -35,7 +35,7 @@ async def show_tournament_menu(message_or_cb: types.Message | types.CallbackQuer
         return
 
     text = f"Управление турниром «{tournament.name}» от {tournament.date.strftime('%d.%m.%Y')} ({tournament.status.name})"
-    kb = tournament_management_menu_kb(tournament_id)
+    kb = tournament_management_menu_kb(tournament)
 
     if isinstance(message_or_cb, types.Message):
         await message_or_cb.answer(text, reply_markup=kb)
@@ -99,13 +99,21 @@ def all_tournaments_kb(tournaments: list[Tournament]) -> types.InlineKeyboardMar
     builder.adjust(1)
     return builder.as_markup()
 
-def tournament_management_menu_kb(tournament_id: int) -> types.InlineKeyboardMarkup:
+def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    tournament_id = tournament.id
     builder.button(text="➕ Добавить участника", callback_data=f"tm_add_participant_start_{tournament_id}")
     builder.button(text="➖ Удалить участника", callback_data=f"tm_remove_participant_start_{tournament_id}")
     builder.button(text="👥 Список участников", callback_data=f"tm_list_participants_{tournament_id}")
-    builder.button(text="🔐 Закрыть ставки", callback_data=f"tm_close_bets_{tournament_id}")
-    builder.button(text="✏️ Ввести результаты", callback_data=f"tm_set_results_start_{tournament_id}")
+
+    if tournament.status == TournamentStatus.OPEN:
+        builder.button(text="🔐 Закрыть ставки", callback_data=f"tm_close_bets_{tournament_id}")
+    elif tournament.status == TournamentStatus.LIVE:
+        builder.button(text="🔓 Открыть ставки", callback_data=f"tm_open_bets_{tournament_id}")
+
+    if tournament.status != TournamentStatus.FINISHED:
+        builder.button(text="✏️ Ввести результаты", callback_data=f"tm_set_results_start_{tournament_id}")
+    
     builder.button(text="❌ Удалить турнир", callback_data=f"tm_delete_{tournament_id}")
     builder.button(text="◀️ Назад к списку", callback_data="tm_back_to_list")
     builder.adjust(2, 1, 2, 1)
@@ -328,6 +336,23 @@ async def cq_close_bets(callback: types.CallbackQuery, state: FSMContext):
         tournament.status = TournamentStatus.LIVE
         await session.commit()
         await callback.answer("✅ Прием ставок закрыт. Статус изменен на LIVE.", show_alert=True)
+    await show_tournament_menu(callback, state, tournament_id)
+
+
+@router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_open_bets_"))
+async def cq_open_bets(callback: types.CallbackQuery, state: FSMContext):
+    tournament_id = int(callback.data.split("_")[-1])
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id)
+        if not tournament:
+            await callback.answer("⚠️ Турнир не найден.", show_alert=True)
+            return
+        if tournament.status != TournamentStatus.LIVE:
+            await callback.answer(f"⚠️ Ставки уже открыты или турнир завершен. Статус: {tournament.status.name}", show_alert=True)
+            return
+        tournament.status = TournamentStatus.OPEN
+        await session.commit()
+        await callback.answer("✅ Прием ставок снова открыт. Статус изменен на OPEN.", show_alert=True)
     await show_tournament_menu(callback, state, tournament_id)
 
 
