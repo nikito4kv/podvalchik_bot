@@ -134,8 +134,8 @@ def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboar
     builder = InlineKeyboardBuilder()
     tournament_id = tournament.id
     
-    # Participant management is always available before results are set
-    if tournament.status != TournamentStatus.FINISHED:
+    # Participant management is available only during setup
+    if tournament.status in [TournamentStatus.DRAFT, TournamentStatus.OPEN]:
         builder.button(text="➕ Добавить участника", callback_data=f"tm_add_participant_start_{tournament_id}")
         builder.button(text="➖ Удалить участника", callback_data=f"tm_remove_participant_start_{tournament_id}")
     
@@ -158,8 +158,10 @@ def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboar
     # Adjust layout based on status
     if tournament.status == TournamentStatus.DRAFT:
          builder.adjust(2, 1, 1, 2)
-    elif tournament.status in [TournamentStatus.OPEN, TournamentStatus.LIVE]:
+    elif tournament.status == TournamentStatus.OPEN:
          builder.adjust(2, 1, 1, 1, 2)
+    elif tournament.status == TournamentStatus.LIVE:
+         builder.adjust(1, 1, 1, 2) # New adjustment for LIVE
     else: # FINISHED
         builder.adjust(1, 2)
         
