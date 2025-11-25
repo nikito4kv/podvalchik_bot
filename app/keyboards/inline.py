@@ -177,3 +177,10 @@ def forecast_history_kb(
         InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_forecasts_menu")
     )
     return builder.as_markup()
+
+
+def cancel_fsm_kb() -> InlineKeyboardMarkup:
+    """Creates a keyboard with a single 'Cancel' button for FSM processes."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="fsm_cancel")
+    return builder.as_markup()

@@ -13,7 +13,7 @@ from app.filters.is_admin import IsAdmin
 from app.db.models import Tournament, Player, TournamentStatus, Forecast, User
 from app.db.session import async_session
 from app.states.tournament_management import TournamentManagement, SetResults
-from app.keyboards.inline import get_paginated_players_kb, confirmation_kb
+from app.keyboards.inline import get_paginated_players_kb, confirmation_kb, cancel_fsm_kb
 from app.core.scoring import calculate_forecast_points, calculate_new_stats
 
 
@@ -133,8 +133,12 @@ def all_tournaments_kb(tournaments: list[Tournament]) -> types.InlineKeyboardMar
 def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     tournament_id = tournament.id
-    builder.button(text="➕ Добавить участника", callback_data=f"tm_add_participant_start_{tournament_id}")
-    builder.button(text="➖ Удалить участника", callback_data=f"tm_remove_participant_start_{tournament_id}")
+    
+    # Participant management is always available before results are set
+    if tournament.status != TournamentStatus.FINISHED:
+        builder.button(text="➕ Добавить участника", callback_data=f"tm_add_participant_start_{tournament_id}")
+        builder.button(text="➖ Удалить участника", callback_data=f"tm_remove_participant_start_{tournament_id}")
+    
     builder.button(text="👥 Список участников", callback_data=f"tm_list_participants_{tournament_id}")
 
     if tournament.status == TournamentStatus.DRAFT:
@@ -144,12 +148,21 @@ def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboar
     elif tournament.status == TournamentStatus.LIVE:
         builder.button(text="🔓 Открыть ставки", callback_data=f"tm_open_bets_{tournament_id}")
 
-    if tournament.status != TournamentStatus.FINISHED:
+    # Results can only be set when the tournament is LIVE
+    if tournament.status == TournamentStatus.LIVE:
         builder.button(text="✏️ Ввести результаты", callback_data=f"tm_set_results_start_{tournament_id}")
     
     builder.button(text="❌ Удалить турнир", callback_data=f"tm_delete_{tournament_id}")
     builder.button(text="◀️ Назад к списку", callback_data="tm_back_to_list")
-    builder.adjust(2, 1, 1, 2, 1) # Adjust layout
+    
+    # Adjust layout based on status
+    if tournament.status == TournamentStatus.DRAFT:
+         builder.adjust(2, 1, 1, 2)
+    elif tournament.status in [TournamentStatus.OPEN, TournamentStatus.LIVE]:
+         builder.adjust(2, 1, 1, 1, 2)
+    else: # FINISHED
+        builder.adjust(1, 2)
+        
     return builder.as_markup()
 
 
@@ -201,20 +214,32 @@ async def cq_select_tournament_to_manage(callback: types.CallbackQuery, state: F
 async def cq_back_to_tournament_list(callback: types.CallbackQuery, state: FSMContext):
     await cmd_manage_tournaments(callback, state)
 
+@router.callback_query(StateFilter(TournamentManagement.creating_tournament_enter_name, TournamentManagement.creating_tournament_enter_date), F.data == "fsm_cancel")
+async def cq_creation_cancel(callback: types.CallbackQuery, state: FSMContext):
+    """Cancels the tournament creation process."""
+    await state.clear()
+    await callback.answer("Создание турнира отменено.")
+    await cmd_manage_tournaments(callback, state)
+
 
 # --- TOURNAMENT CREATION & DELETION ---
 
 @router.callback_query(TournamentManagement.choosing_tournament, F.data == "tm_create_new")
 async def cq_create_tournament_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(TournamentManagement.creating_tournament_enter_name)
-    await callback.message.edit_text("Введите название нового турнира:")
+    await callback.message.edit_text(
+        "Введите название нового турнира:", reply_markup=cancel_fsm_kb()
+    )
     await callback.answer()
 
 @router.message(TournamentManagement.creating_tournament_enter_name)
 async def msg_create_tournament_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
     await state.set_state(TournamentManagement.creating_tournament_enter_date)
-    await message.answer("Отлично! Теперь введите дату турнира в формате ДД.ММ.ГГГГ:")
+    await message.answer(
+        "Отлично! Теперь введите дату турнира в формате ДД.ММ.ГГГГ:",
+        reply_markup=cancel_fsm_kb(),
+    )
 
 @router.message(TournamentManagement.creating_tournament_enter_date)
 async def msg_create_tournament_date(message: types.Message, state: FSMContext):
