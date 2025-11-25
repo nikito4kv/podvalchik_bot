@@ -18,6 +18,16 @@ def tournament_selection_kb(tournaments: List[Tournament]) -> InlineKeyboardMark
     return builder.as_markup()
 
 
+def tournament_user_menu_kb(tournament_id: int) -> InlineKeyboardMarkup:
+    """Creates a user menu for a selected tournament."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔮 Сделать прогноз", callback_data=f"predict_start_{tournament_id}")
+    builder.button(text="👥 Список участников", callback_data=f"view_participants_{tournament_id}")
+    builder.button(text="◀️ Назад", callback_data="predict_back_to_list")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def confirmation_kb(action_prefix: str = "confirm") -> InlineKeyboardMarkup:
     """Creates a keyboard for confirmation with a dynamic prefix."""
     builder = InlineKeyboardBuilder()

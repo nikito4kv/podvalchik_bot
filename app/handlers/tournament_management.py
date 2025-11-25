@@ -295,6 +295,57 @@ async def cq_delete_tournament_cancel(callback: types.CallbackQuery, state: FSMC
 
 # --- PARTICIPANT MANAGEMENT ---
 
+async def add_player_to_tournament_logic(message: types.Message | types.CallbackQuery, state: FSMContext, player_id: int, tournament_id: int):
+    """Helper to finalize adding a player to the tournament."""
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+        player = await session.get(Player, player_id)
+        
+        if player not in tournament.participants:
+            tournament.participants.append(player)
+            await session.commit()
+            text = f"✅ {player.full_name} добавлен"
+            if player.current_rating is not None:
+                text += f" (Рейтинг: {player.current_rating})"
+            else:
+                text += " (Без рейтинга)"
+            
+            # Notify users
+            await notify_predictors_of_change(message.bot, session, tournament, player, "added")
+            
+            if isinstance(message, types.CallbackQuery):
+                await message.answer(text, show_alert=True)
+            else:
+                await message.answer(text)
+        else:
+            if isinstance(message, types.CallbackQuery):
+                await message.answer(f"⚠️ {player.full_name} уже в турнире.", show_alert=True)
+            else:
+                await message.answer(f"⚠️ {player.full_name} уже в турнире.")
+
+    if isinstance(message, types.CallbackQuery):
+        await show_add_participant_menu(message, state)
+    else:
+        # Trick to reuse the show_add_participant_menu which expects a CallbackQuery
+        # We need to send a message with the menu
+        await state.set_state(TournamentManagement.adding_participant_choosing_player)
+        # We need to re-fetch data to pass to get_paginated_players_kb, easiest is to call the menu shower
+        # But show_add_participant_menu takes a CallbackQuery.
+        # Let's manually trigger the menu display logic for Message context
+        async with async_session() as session:
+            tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+            participant_ids = {p.id for p in tournament.participants}
+            all_players_res = await session.execute(select(Player))
+            all_players = all_players_res.scalars().all()
+        
+        await state.update_data(all_players={p.id: p.full_name for p in all_players})
+        kb = get_paginated_players_kb(
+            players=all_players, action="add_player", selected_ids=list(participant_ids),
+            tournament_id=tournament_id, show_create_new=True, show_back_to_menu=True
+        )
+        await message.answer("Выберите игрока для добавления:", reply_markup=kb)
+
+
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_list_participants_"))
 async def cq_list_participants(callback: types.CallbackQuery, state: FSMContext):
     tournament_id = int(callback.data.split("_")[-1])
@@ -304,7 +355,17 @@ async def cq_list_participants(callback: types.CallbackQuery, state: FSMContext)
     if not tournament.participants:
         text += "В этом турнире пока нет зарегистрированных участников."
     else:
-        text += "\n".join(f"• {p.full_name}" for p in sorted(tournament.participants, key=lambda p: p.full_name))
+        # Sort by rating (desc) then name
+        sorted_participants = sorted(
+            tournament.participants, 
+            key=lambda p: (-(p.current_rating or 0), p.full_name)
+        )
+        lines = []
+        for p in sorted_participants:
+            rating_str = f" ({p.current_rating})" if p.current_rating is not None else ""
+            lines.append(f"• {p.full_name}{rating_str}")
+        text += "\n".join(lines)
+        
     builder = InlineKeyboardBuilder()
     builder.button(text="◀️ Назад в меню", callback_data=f"manage_tournament_{tournament_id}")
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
@@ -320,20 +381,79 @@ async def cq_add_participant_start(callback: types.CallbackQuery, state: FSMCont
 @router.callback_query(TournamentManagement.adding_participant_choosing_player, F.data.startswith("add_player:"))
 async def cq_add_participant_select(callback: types.CallbackQuery, state: FSMContext):
     player_id = int(callback.data.split(":")[1])
-    data = await state.get_data()
-    tournament_id = data['managed_tournament_id']
+    await state.update_data(selected_player_id=player_id)
+    
     async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
         player = await session.get(Player, player_id)
-        if player not in tournament.participants:
-            tournament.participants.append(player)
-            await session.commit()
-            await callback.answer(f"✅ {player.full_name} добавлен.", show_alert=True)
-            # Notify users
-            await notify_predictors_of_change(callback.bot, session, tournament, player, "added")
-        else:
-            await callback.answer(f"⚠️ {player.full_name} уже в турнире.", show_alert=True)
+        current_rating = player.current_rating
+    
+    rating_text = str(current_rating) if current_rating is not None else "Нет"
+    text = f"Игрок: <b>{player.full_name}</b>\nТекущий рейтинг: <b>{rating_text}</b>\n\nЧто делаем с рейтингом?"
+    
+    builder = InlineKeyboardBuilder()
+    if current_rating is not None:
+        builder.button(text=f"✅ Оставить {current_rating}", callback_data="rating:keep")
+        builder.button(text="✏️ Изменить", callback_data="rating:change")
+    else:
+        builder.button(text="✏️ Установить рейтинг", callback_data="rating:change")
+        
+    builder.button(text="🗑 Без рейтинга", callback_data="rating:clear")
+    builder.button(text="↩️ Отмена", callback_data="rating:cancel")
+    builder.adjust(1, 1, 2)
+    
+    await state.set_state(TournamentManagement.adding_participant_rating_options)
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+@router.callback_query(TournamentManagement.adding_participant_rating_options, F.data == "rating:keep")
+async def cq_rating_keep(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    player_id = data.get("selected_player_id")
+    tournament_id = data.get("managed_tournament_id")
+    await add_player_to_tournament_logic(callback, state, player_id, tournament_id)
+
+@router.callback_query(TournamentManagement.adding_participant_rating_options, F.data == "rating:clear")
+async def cq_rating_clear(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    player_id = data.get("selected_player_id")
+    tournament_id = data.get("managed_tournament_id")
+    
+    async with async_session() as session:
+        player = await session.get(Player, player_id)
+        player.current_rating = None
+        await session.commit()
+        
+    await add_player_to_tournament_logic(callback, state, player_id, tournament_id)
+
+@router.callback_query(TournamentManagement.adding_participant_rating_options, F.data == "rating:change")
+async def cq_rating_change_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(TournamentManagement.adding_participant_entering_rating)
+    await callback.message.edit_text("Введите значение рейтинга (целое число):")
+    await callback.answer()
+
+@router.message(TournamentManagement.adding_participant_entering_rating)
+async def msg_rating_input(message: types.Message, state: FSMContext):
+    try:
+        new_rating = int(message.text.strip())
+    except ValueError:
+        await message.answer("Пожалуйста, введите целое число.")
+        return
+
+    data = await state.get_data()
+    player_id = data.get("selected_player_id")
+    tournament_id = data.get("managed_tournament_id")
+
+    async with async_session() as session:
+        player = await session.get(Player, player_id)
+        player.current_rating = new_rating
+        await session.commit()
+    
+    await add_player_to_tournament_logic(message, state, player_id, tournament_id)
+
+@router.callback_query(TournamentManagement.adding_participant_rating_options, F.data == "rating:cancel")
+async def cq_rating_cancel(callback: types.CallbackQuery, state: FSMContext):
     await show_add_participant_menu(callback, state)
+    await callback.answer()
 
 @router.callback_query(TournamentManagement.adding_participant_choosing_player, F.data == "create_new:add_player")
 async def cq_add_participant_create_new(callback: types.CallbackQuery, state: FSMContext):
@@ -345,24 +465,46 @@ async def cq_add_participant_create_new(callback: types.CallbackQuery, state: FS
 async def msg_add_participant_create_and_add(message: types.Message, state: FSMContext):
     new_player_name = message.text.strip()
     data = await state.get_data()
-    tournament_id = data.get("managed_tournament_id")
+    # tournament_id = data.get("managed_tournament_id") # Not needed here immediately anymore
+
     async with async_session() as session:
         existing_player = await session.scalar(select(Player).where(func.lower(Player.full_name) == func.lower(new_player_name)))
         if existing_player:
             await message.answer(f"⚠️ Игрок '{new_player_name}' уже существует. Добавьте его из списка.")
+            # Need to go back to list or selection.
+            # Using logic similar to the end of add_player_to_tournament_logic for Message context
+            # But here we just want to show the list again.
+            tournament_id = data.get("managed_tournament_id")
+            await state.set_state(TournamentManagement.adding_participant_choosing_player)
+            tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+            participant_ids = {p.id for p in tournament.participants}
+            all_players_res = await session.execute(select(Player))
+            all_players = all_players_res.scalars().all()
+            await state.update_data(all_players={p.id: p.full_name for p in all_players})
+            kb = get_paginated_players_kb(
+                players=all_players, action="add_player", selected_ids=list(participant_ids),
+                tournament_id=tournament_id, show_create_new=True, show_back_to_menu=True
+            )
+            await message.answer("Выберите игрока для добавления:", reply_markup=kb)
+            return
         else:
             new_player = Player(full_name=new_player_name)
             session.add(new_player)
-            await session.flush() # To get the new_player.id
+            await session.commit() # Commit to get ID
+            await session.refresh(new_player)
             
-            tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
-            tournament.participants.append(new_player)
-            await session.commit()
-            await message.answer(f"✅ Новый игрок '{new_player_name}' создан и добавлен в турнир.")
-            # Notify users
-            await notify_predictors_of_change(message.bot, session, tournament, new_player, "added")
-
-    await show_tournament_menu(message, state, tournament_id)
+            await state.update_data(selected_player_id=new_player.id)
+            
+            # Now go to rating options
+            text = f"✅ Новый игрок <b>{new_player.full_name}</b> создан.\nРейтинга пока нет.\n\nЧто делаем?"
+            builder = InlineKeyboardBuilder()
+            builder.button(text="✏️ Установить рейтинг", callback_data="rating:change")
+            builder.button(text="🗑 Без рейтинга", callback_data="rating:clear")
+            builder.button(text="↩️ Отмена (не добавлять)", callback_data="rating:cancel")
+            builder.adjust(1, 1)
+            
+            await state.set_state(TournamentManagement.adding_participant_rating_options)
+            await message.answer(text, reply_markup=builder.as_markup())
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_remove_participant_start_"))
 async def cq_remove_participant_start(callback: types.CallbackQuery, state: FSMContext):
@@ -582,16 +724,28 @@ async def cq_set_results_confirm(callback: types.CallbackQuery, state: FSMContex
                         f"Failed to send notification to user {forecast.user_id}: {e}"
                     )
             
-            # Notify admin with top forecasters
-            top_forecasters = sorted(tournament.forecasts, key=lambda f: f.points_earned or 0, reverse=True)[:3]
-            admin_summary_text = f"<b>🏆 Топ-3 прогнозистов турнира «{tournament.name}»:</b>\n\n"
+            # Notify admin with ALL forecasters
+            # Tie-breaker: earlier forecast (lower ID) wins.
+            # We sort by (points descending, id ascending).
+            # Since we use reverse=True (descending), we use (points, -id).
+            all_forecasters = sorted(tournament.forecasts, key=lambda f: (f.points_earned or 0, -f.id), reverse=True)
+            
+            admin_summary_text = f"<b>🏆 Итоги прогнозов турнира «{tournament.name}»:</b>\n\n"
             medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-            for i, forecast in enumerate(top_forecasters):
+            
+            for i, forecast in enumerate(all_forecasters):
                 place = medals.get(i, f" {i + 1}.")
                 username = forecast.user.username or f"id:{forecast.user.id}"
-                admin_summary_text += f"{place} @{username} - <b>{forecast.points_earned or 0}</b> очков\n"
+                line = f"{place} @{username} - <b>{forecast.points_earned or 0}</b> очков\n"
+                
+                if len(admin_summary_text) + len(line) > 4000:
+                    await callback.message.answer(admin_summary_text)
+                    admin_summary_text = ""
+                
+                admin_summary_text += line
 
-            await callback.message.answer(admin_summary_text)
+            if admin_summary_text:
+                await callback.message.answer(admin_summary_text)
 
         except Exception as e:
             await session.rollback()

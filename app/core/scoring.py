@@ -24,11 +24,12 @@ def calculate_forecast_points(
             diff = abs(predicted_rank - actual_rank)
             diffs.append(diff)
 
-            slot_points = max(0, 100 - (diff * 15))
+            # Очки: теперь в 10 раз меньше, чем раньше
+            slot_points = max(0, (100 - (diff * 15)) // 10)
 
-            # Бонус за точное попадание
+            # Бонус за точное попадание: теперь 2 очка вместо 20
             if diff == 0:
-                slot_points += 20
+                slot_points += 2
                 exact_hits += 1
 
             total_points += slot_points

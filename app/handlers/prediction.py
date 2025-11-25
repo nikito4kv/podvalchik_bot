@@ -1,13 +1,14 @@
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, and_, delete
 from sqlalchemy.orm import selectinload
 
 from app.db.models import Tournament, TournamentStatus, Player, Forecast, User
 from app.db.session import async_session
 from app.states.user_states import MakeForecast
-from app.keyboards.inline import get_paginated_players_kb, confirmation_kb
+from app.keyboards.inline import get_paginated_players_kb, confirmation_kb, tournament_user_menu_kb
 
 router = Router()
 
@@ -32,32 +33,87 @@ async def get_open_tournaments(user_id: int):
 
 @router.message(F.text == "🏁 Актуальные турниры")
 @router.message(Command("predict"))
-async def cmd_predict_start(message: types.Message, state: FSMContext):
+async def cmd_predict_start(message: types.Message | types.CallbackQuery, state: FSMContext):
     """Starts the forecast creation process."""
-    available_tournaments = await get_open_tournaments(message.from_user.id)
+    user_id = message.from_user.id
+    available_tournaments = await get_open_tournaments(user_id)
 
     if not available_tournaments:
-        await message.answer("Сейчас нет турниров, открытых для прогнозов, или вы уже сделали прогноз на все доступные. Загляните позже!")
+        text = "Сейчас нет турниров, открытых для прогнозов, или вы уже сделали прогноз на все доступные. Загляните позже!"
+        if isinstance(message, types.Message):
+            await message.answer(text)
+        else:
+            await message.message.edit_text(text)
         return
 
     # Using the old keyboard here, as it's just for tournament selection.
     from app.keyboards.inline import tournament_selection_kb
     await state.set_state(MakeForecast.choosing_tournament)
-    await message.answer(
-        "Выберите турнир для создания прогноза:",
-        reply_markup=tournament_selection_kb(available_tournaments)
-    )
+    
+    text = "Выберите турнир для создания прогноза:"
+    if isinstance(message, types.Message):
+        await message.answer(text, reply_markup=tournament_selection_kb(available_tournaments))
+    else:
+        await message.message.edit_text(text, reply_markup=tournament_selection_kb(available_tournaments))
+
+@router.callback_query(F.data == "predict_back_to_list")
+async def cq_predict_back_to_list(callback: types.CallbackQuery, state: FSMContext):
+    await cmd_predict_start(callback, state)
+    await callback.answer()
 
 @router.callback_query(MakeForecast.choosing_tournament, F.data.startswith("select_tournament_"))
-async def cq_predict_tournament_chosen(callback: types.CallbackQuery, state: FSMContext):
-    """Handles tournament selection and starts the prediction process."""
+async def cq_show_tournament_menu(callback: types.CallbackQuery, state: FSMContext):
+    """Handles tournament selection and shows the user menu for that tournament."""
+    tournament_id = int(callback.data.split("_")[2])
+    
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id)
+        if not tournament:
+            await callback.answer("Турнир не найден.", show_alert=True)
+            await cmd_predict_start(callback, state)
+            return
+
+    text = f"<b>Турнир: «{tournament.name}»</b>\nДата: {tournament.date.strftime('%d.%m.%Y')}\n\nВыберите действие:"
+    await callback.message.edit_text(text, reply_markup=tournament_user_menu_kb(tournament_id))
+    await callback.answer()
+
+@router.callback_query(MakeForecast.choosing_tournament, F.data.startswith("view_participants_"))
+async def cq_view_participants(callback: types.CallbackQuery, state: FSMContext):
+    """Shows the list of participants for the selected tournament."""
+    tournament_id = int(callback.data.split("_")[2])
+    
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+        
+        text = f"<b>Участники турнира «{tournament.name}»</b>\n\n"
+        if not tournament.participants:
+            text += "В этом турнире пока нет зарегистрированных участников."
+        else:
+            # Sort by rating (desc) then name
+            sorted_participants = sorted(
+                tournament.participants, 
+                key=lambda p: (-(p.current_rating or 0), p.full_name)
+            )
+            lines = []
+            for p in sorted_participants:
+                rating_str = f" ({p.current_rating})" if p.current_rating is not None else ""
+                lines.append(f"• {p.full_name}{rating_str}")
+            text += "\n".join(lines)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад к меню турнира", callback_data=f"select_tournament_{tournament_id}")
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+@router.callback_query(MakeForecast.choosing_tournament, F.data.startswith("predict_start_"))
+async def cq_predict_start(callback: types.CallbackQuery, state: FSMContext):
+    """Starts the actual prediction flow (picking players)."""
     tournament_id = int(callback.data.split("_")[2])
     
     async with async_session() as session:
         tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
         if not tournament or not tournament.participants:
-            await callback.message.edit_text("В этом турнире пока нет зарегистрированных участников. Прогноз невозможен.")
-            await state.clear()
+            await callback.answer("В этом турнире пока нет участников. Прогноз невозможен.", show_alert=True)
             return
         
         players = tournament.participants
