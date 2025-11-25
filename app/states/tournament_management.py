@@ -4,6 +4,7 @@ class TournamentManagement(StatesGroup):
     choosing_tournament = State()
     managing_tournament = State()
     
+    creating_tournament_enter_name = State()
     creating_tournament_enter_date = State()
 
     adding_participant_choosing_player = State()

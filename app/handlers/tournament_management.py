@@ -34,7 +34,7 @@ async def show_tournament_menu(message_or_cb: types.Message | types.CallbackQuer
         await cmd_manage_tournaments(message_or_cb, state, "⚠️ Турнир не найден!")
         return
 
-    text = f"Управление турниром ID: {tournament.id} от {tournament.date.strftime('%d.%m.%Y')} ({tournament.status.name})"
+    text = f"Управление турниром «{tournament.name}» от {tournament.date.strftime('%d.%m.%Y')} ({tournament.status.name})"
     kb = tournament_management_menu_kb(tournament_id)
 
     if isinstance(message_or_cb, types.Message):
@@ -93,7 +93,7 @@ def all_tournaments_kb(tournaments: list[Tournament]) -> types.InlineKeyboardMar
     builder.button(text="Создать новый турнир", callback_data="tm_create_new")
     for t in tournaments:
         builder.button(
-            text=f"ID: {t.id} - {t.date.strftime('%d.%m.%Y')} ({t.status.name})",
+            text=f"«{t.name}» ({t.date.strftime('%d.%m.%Y')}) - {t.status.name}",
             callback_data=f"manage_tournament_{t.id}"
         )
     builder.adjust(1)
@@ -165,9 +165,15 @@ async def cq_back_to_tournament_list(callback: types.CallbackQuery, state: FSMCo
 
 @router.callback_query(TournamentManagement.choosing_tournament, F.data == "tm_create_new")
 async def cq_create_tournament_start(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(TournamentManagement.creating_tournament_enter_date)
-    await callback.message.edit_text("Введите дату турнира в формате ДД.ММ.ГГГГ:")
+    await state.set_state(TournamentManagement.creating_tournament_enter_name)
+    await callback.message.edit_text("Введите название нового турнира:")
     await callback.answer()
+
+@router.message(TournamentManagement.creating_tournament_enter_name)
+async def msg_create_tournament_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(TournamentManagement.creating_tournament_enter_date)
+    await message.answer("Отлично! Теперь введите дату турнира в формате ДД.ММ.ГГГГ:")
 
 @router.message(TournamentManagement.creating_tournament_enter_date)
 async def msg_create_tournament_date(message: types.Message, state: FSMContext):
@@ -176,12 +182,20 @@ async def msg_create_tournament_date(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("Неверный формат даты. Используйте ДД.ММ.ГГГГ. Попробуйте еще раз.")
         return
+    
+    data = await state.get_data()
+    name = data.get("name")
+
     async with async_session() as session:
-        new_tournament = Tournament(date=event_date)
+        new_tournament = Tournament(name=name, date=event_date)
         session.add(new_tournament)
         await session.commit()
-        await message.answer(f"✅ Турнир на {event_date.strftime('%d.%m.%Y')} успешно создан.")
+        await message.answer(f"✅ Турнир '{name}' на {event_date.strftime('%d.%m.%Y')} успешно создан.")
+    
+    await state.clear() # Clear state after creation
+    # Show the main menu again, but it requires a message/callback, so we call the root handler
     await cmd_manage_tournaments(message, state)
+
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_delete_"))
 async def cq_delete_tournament_confirm(callback: types.CallbackQuery, state: FSMContext):

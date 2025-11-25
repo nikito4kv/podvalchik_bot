@@ -109,8 +109,7 @@ def active_tournaments_kb(tournaments: List[Tournament]) -> InlineKeyboardMarkup
     """Creates a keyboard to select an active tournament to view a forecast."""
     builder = InlineKeyboardBuilder()
     for tournament in tournaments:
-        # Later we will use tournament.name
-        text = f"Турнир от {tournament.date.strftime('%d.%m.%Y')}"
+        text = f"«{tournament.name}» ({tournament.date.strftime('%d.%m.%Y')})"
         builder.button(text=text, callback_data=f"view_forecast:{tournament.id}")
     builder.adjust(1)
     # Add a back button
@@ -141,8 +140,7 @@ def forecast_history_kb(
     page_forecasts = forecasts[start_index:end_index]
 
     for forecast in page_forecasts:
-        # Later we will use forecast.tournament.name
-        text = f"Турнир от {forecast.tournament.date.strftime('%d.%m.%Y')}"
+        text = f"«{forecast.tournament.name}» ({forecast.tournament.date.strftime('%d.%m.%Y')})"
         builder.button(
             text=text, callback_data=f"view_history:{forecast.id}:{page}"
         )

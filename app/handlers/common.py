@@ -200,9 +200,8 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):
         players = {p.id: p.full_name for p in result.scalars()}
 
         # Format the message
-        # Later we will use forecast.tournament.name
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
-        text = f"<b>Ваш прогноз на турнир от {tournament_date}:</b>\n\n"
+        text = f"<b>Ваш прогноз на турнир «{forecast.tournament.name}» от {tournament_date}:</b>\n\n"
 
         medals = {0: "🥇", 1: "🥈", 2: "🥉"}
         for i, player_id in enumerate(player_ids):
@@ -282,7 +281,7 @@ async def show_specific_history(callback_query: types.CallbackQuery):
 
         # Format message
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
-        text = f"<b>История прогноза на турнир от {tournament_date}</b>\n\n"
+        text = f"<b>История прогноза на турнир «{forecast.tournament.name}» от {tournament_date}</b>\n\n"
         text += "<b>📜 Ваш прогноз:</b>\n"
         medals = {0: "🥇", 1: "🥈", 2: "🥉"}
         for i, player_id in enumerate(pred_ids):

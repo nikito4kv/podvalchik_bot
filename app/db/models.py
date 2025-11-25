@@ -60,6 +60,7 @@ class Tournament(Base):
     __tablename__ = "tournaments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
     date = Column(Date, nullable=False)
     status = Column(Enum(TournamentStatus), default=TournamentStatus.OPEN)
     results = Column(JSON)  # {"player_id": rank}
