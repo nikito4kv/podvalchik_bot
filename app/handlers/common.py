@@ -133,176 +133,177 @@ async def back_to_forecasts_menu(callback_query: types.CallbackQuery):
 
 
 @router.callback_query(F.data == "forecasts:active")
-async def show_active_forecasts(
-    callback_query: types.CallbackQuery, session: AsyncSession
-):
+async def show_active_forecasts(callback_query: types.CallbackQuery):
     """
     Shows a list of tournaments for which the user has an active forecast.
     """
     user_id = callback_query.from_user.id
-
-    active_forecasts_stmt = (
-        select(Forecast)
-        .options(joinedload(Forecast.tournament))
-        .join(Tournament, Forecast.tournament_id == Tournament.id)
-        .where(
-            Forecast.user_id == user_id,
-            Tournament.status.in_([TournamentStatus.OPEN, TournamentStatus.LIVE]),
+    async with async_session() as session:
+        active_forecasts_stmt = (
+            select(Forecast)
+            .options(joinedload(Forecast.tournament))
+            .join(Tournament, Forecast.tournament_id == Tournament.id)
+            .where(
+                Forecast.user_id == user_id,
+                Tournament.status.in_([TournamentStatus.OPEN, TournamentStatus.LIVE]),
+            )
+            .order_by(Tournament.date.desc())
         )
-        .order_by(Tournament.date.desc())
-    )
-    result = await session.execute(active_forecasts_stmt)
-    forecasts = result.scalars().all()
+        result = await session.execute(active_forecasts_stmt)
+        forecasts = result.scalars().all()
 
-    if not forecasts:
-        await callback_query.answer("У вас нет активных прогнозов.", show_alert=True)
-        return
+        if not forecasts:
+            await callback_query.answer("У вас нет активных прогнозов.", show_alert=True)
+            return
 
-    await callback_query.message.edit_text(
-        "Выберите турнир, чтобы посмотреть ваш прогноз:",
-        reply_markup=active_tournaments_kb([f.tournament for f in forecasts]),
-    )
+        await callback_query.message.edit_text(
+            "Выберите турнир, чтобы посмотреть ваш прогноз:",
+            reply_markup=active_tournaments_kb([f.tournament for f in forecasts]),
+        )
     await callback_query.answer()
 
 
 @router.callback_query(F.data.startswith("view_forecast:"))
-async def show_specific_forecast(
-    callback_query: types.CallbackQuery, session: AsyncSession
-):
+async def show_specific_forecast(callback_query: types.CallbackQuery):
     """
     Shows the user's specific forecast for a selected tournament.
     """
     tournament_id = int(callback_query.data.split(":")[1])
     user_id = callback_query.from_user.id
 
-    # Fetch the forecast with tournament info
-    forecast_stmt = (
-        select(Forecast)
-        .options(joinedload(Forecast.tournament))
-        .where(
-            Forecast.user_id == user_id, Forecast.tournament_id == tournament_id
+    async with async_session() as session:
+        # Fetch the forecast with tournament info
+        forecast_stmt = (
+            select(Forecast)
+            .options(joinedload(Forecast.tournament))
+            .where(
+                Forecast.user_id == user_id, Forecast.tournament_id == tournament_id
+            )
         )
-    )
-    result = await session.execute(forecast_stmt)
-    forecast = result.scalar_one_or_none()
+        result = await session.execute(forecast_stmt)
+        forecast = result.scalar_one_or_none()
 
-    if not forecast:
-        await callback_query.answer("Прогноз не найден.", show_alert=True)
-        return
+        if not forecast:
+            await callback_query.answer("Прогноз не найден.", show_alert=True)
+            return
 
-    # Fetch player names
-    player_ids = forecast.prediction_data
-    if not player_ids:
-        await callback_query.answer(
-            "В этом прогнозе нет данных об игроках.", show_alert=True
-        )
-        return
+        # Fetch player names
+        player_ids = forecast.prediction_data
+        if not player_ids:
+            await callback_query.answer(
+                "В этом прогнозе нет данных об игроках.", show_alert=True
+            )
+            return
 
-    players_stmt = select(Player).where(Player.id.in_(player_ids))
-    result = await session.execute(players_stmt)
-    players = {p.id: p.full_name for p in result.scalars()}
+        players_stmt = select(Player).where(Player.id.in_(player_ids))
+        result = await session.execute(players_stmt)
+        players = {p.id: p.full_name for p in result.scalars()}
 
-    # Format the message
-    # Later we will use forecast.tournament.name
-    tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
-    text = f"<b>Ваш прогноз на турнир от {tournament_date}:</b>\n\n"
+        # Format the message
+        # Later we will use forecast.tournament.name
+        tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
+        text = f"<b>Ваш прогноз на турнир от {tournament_date}:</b>\n\n"
 
-    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-    for i, player_id in enumerate(player_ids):
-        place = medals.get(i, f" {i + 1}.")
-        player_name = players.get(player_id, "Неизвестный игрок")
-        text += f"{place} {player_name}\n"
+        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        for i, player_id in enumerate(player_ids):
+            place = medals.get(i, f" {i + 1}.")
+            player_name = players.get(player_id, "Неизвестный игрок")
+            text += f"{place} {player_name}\n"
 
-    await callback_query.message.edit_text(text, reply_markup=view_forecast_kb())
+        await callback_query.message.edit_text(text, reply_markup=view_forecast_kb())
     await callback_query.answer()
 
 
 @router.callback_query(F.data.startswith("forecasts:history:"))
-async def show_forecast_history(
-    callback_query: types.CallbackQuery, session: AsyncSession
-):
+async def show_forecast_history(callback_query: types.CallbackQuery):
     """
     Shows a paginated list of the user's past forecasts.
     """
     page = int(callback_query.data.split(":")[2])
     user_id = callback_query.from_user.id
 
-    history_stmt = (
-        select(Forecast)
-        .options(joinedload(Forecast.tournament))
-        .join(Tournament, Forecast.tournament_id == Tournament.id)
-        .where(
-            Forecast.user_id == user_id, Tournament.status == TournamentStatus.FINISHED
+    async with async_session() as session:
+        history_stmt = (
+            select(Forecast)
+            .options(joinedload(Forecast.tournament))
+            .join(Tournament, Forecast.tournament_id == Tournament.id)
+            .where(
+                Forecast.user_id == user_id,
+                Tournament.status == TournamentStatus.FINISHED,
+            )
+            .order_by(Tournament.date.desc())
         )
-        .order_by(Tournament.date.desc())
-    )
-    result = await session.execute(history_stmt)
-    forecasts = result.scalars().all()
+        result = await session.execute(history_stmt)
+        forecasts = result.scalars().all()
 
-    if not forecasts:
-        await callback_query.answer("У вас нет прошлых прогнозов.", show_alert=True)
-        return
+        if not forecasts:
+            await callback_query.answer("У вас нет прошлых прогнозов.", show_alert=True)
+            return
 
-    await callback_query.message.edit_text(
-        "История ваших прогнозов:", reply_markup=forecast_history_kb(forecasts, page)
-    )
+        await callback_query.message.edit_text(
+            "История ваших прогнозов:",
+            reply_markup=forecast_history_kb(forecasts, page),
+        )
     await callback_query.answer()
 
 
 @router.callback_query(F.data.startswith("view_history:"))
-async def show_specific_history(
-    callback_query: types.CallbackQuery, session: AsyncSession
-):
+async def show_specific_history(callback_query: types.CallbackQuery):
     """
     Shows a detailed comparison for a past forecast.
     """
     parts = callback_query.data.split(":")
     forecast_id, page = int(parts[1]), int(parts[2])
 
-    # Fetch the forecast with tournament info
-    forecast_stmt = (
-        select(Forecast)
-        .options(joinedload(Forecast.tournament))
-        .where(Forecast.id == forecast_id)
-    )
-    result = await session.execute(forecast_stmt)
-    forecast = result.scalar_one_or_none()
+    async with async_session() as session:
+        # Fetch the forecast with tournament info
+        forecast_stmt = (
+            select(Forecast)
+            .options(joinedload(Forecast.tournament))
+            .where(Forecast.id == forecast_id)
+        )
+        result = await session.execute(forecast_stmt)
+        forecast = result.scalar_one_or_none()
 
-    if not forecast or not forecast.tournament.results:
-        await callback_query.answer("История для этого прогноза не найдена.", show_alert=True)
-        return
+        if not forecast or not forecast.tournament.results:
+            await callback_query.answer(
+                "История для этого прогноза не найдена.", show_alert=True
+            )
+            return
 
-    # Get all player IDs from prediction and results to fetch names in one query
-    pred_ids = forecast.prediction_data
-    res_ids = [int(k) for k in forecast.tournament.results.keys()]
-    all_player_ids = list(set(pred_ids) | set(res_ids))
-    
-    players_stmt = select(Player).where(Player.id.in_(all_player_ids))
-    result = await session.execute(players_stmt)
-    players = {p.id: p.full_name for p in result.scalars()}
+        # Get all player IDs from prediction and results to fetch names in one query
+        pred_ids = forecast.prediction_data
+        res_ids = [int(k) for k in forecast.tournament.results.keys()]
+        all_player_ids = list(set(pred_ids) | set(res_ids))
 
-    # Format message
-    tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
-    text = f"<b>История прогноза на турнир от {tournament_date}</b>\n\n"
-    text += "<b>📜 Ваш прогноз:</b>\n"
-    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-    for i, player_id in enumerate(pred_ids):
-        place = medals.get(i, f" {i + 1}.")
-        player_name = players.get(player_id, "?")
-        text += f"{place} {player_name}\n"
+        players_stmt = select(Player).where(Player.id.in_(all_player_ids))
+        result = await session.execute(players_stmt)
+        players = {p.id: p.full_name for p in result.scalars()}
 
-    text += "\n<b>🏆 Итоги турнира:</b>\n"
-    # Sort results by rank
-    sorted_results = sorted(forecast.tournament.results.items(), key=lambda item: item[1])
-    for player_id_str, rank in sorted_results:
-        place = medals.get(rank - 1, f" {rank}.")
-        player_name = players.get(int(player_id_str), "?")
-        text += f"{place} {player_name}\n"
-    
-    text += f"\n<b>💰 Очки за прогноз:</b> {forecast.points_earned or 0}"
+        # Format message
+        tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
+        text = f"<b>История прогноза на турнир от {tournament_date}</b>\n\n"
+        text += "<b>📜 Ваш прогноз:</b>\n"
+        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        for i, player_id in enumerate(pred_ids):
+            place = medals.get(i, f" {i + 1}.")
+            player_name = players.get(player_id, "?")
+            text += f"{place} {player_name}\n"
 
-    await callback_query.message.edit_text(
-        text, reply_markup=view_forecast_kb(page=page)
-    )
+        text += "\n<b>🏆 Итоги турнира:</b>\n"
+        # Sort results by rank
+        sorted_results = sorted(
+            forecast.tournament.results.items(), key=lambda item: item[1]
+        )
+        for player_id_str, rank in sorted_results:
+            place = medals.get(rank - 1, f" {rank}.")
+            player_name = players.get(int(player_id_str), "?")
+            text += f"{place} {player_name}\n"
+
+        text += f"\n<b>💰 Очки за прогноз:</b> {forecast.points_earned or 0}"
+
+        await callback_query.message.edit_text(
+            text, reply_markup=view_forecast_kb(page=page)
+        )
     await callback_query.answer()
 
