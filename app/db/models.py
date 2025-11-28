@@ -10,6 +10,7 @@ from sqlalchemy import (
     JSON,
     ForeignKey,
     Table,
+    Boolean,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -43,6 +44,7 @@ class Player(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     full_name = Column(String, nullable=False, unique=True)
     current_rating = Column(Integer)
+    is_active = Column(Boolean, default=True)
 
     # Связь многие-ко-многим с турнирами
     tournaments = relationship(

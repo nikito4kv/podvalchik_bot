@@ -8,7 +8,17 @@ from sqlalchemy.orm import selectinload
 from app.db.models import Tournament, TournamentStatus, Player, Forecast, User
 from app.db.session import async_session
 from app.states.user_states import MakeForecast
-from app.keyboards.inline import get_paginated_players_kb, confirmation_kb, tournament_user_menu_kb
+from app.config import ADMIN_IDS
+from app.utils.formatting import draw_progress_bar
+from app.keyboards.inline import (
+    get_paginated_players_kb, 
+    confirmation_kb, 
+    tournament_user_menu_kb,
+    tournament_selection_kb,
+    view_others_forecasts_menu_kb,
+    get_paginated_forecasts_list_kb,
+    view_single_forecast_back_kb
+)
 
 router = Router()
 
@@ -46,8 +56,6 @@ async def cmd_predict_start(message: types.Message | types.CallbackQuery, state:
             await message.message.edit_text(text)
         return
 
-    # Using the old keyboard here, as it's just for tournament selection.
-    from app.keyboards.inline import tournament_selection_kb
     await state.set_state(MakeForecast.choosing_tournament)
     
     text = "Выберите турнир для создания прогноза:"
@@ -61,7 +69,7 @@ async def cq_predict_back_to_list(callback: types.CallbackQuery, state: FSMConte
     await cmd_predict_start(callback, state)
     await callback.answer()
 
-@router.callback_query(MakeForecast.choosing_tournament, F.data.startswith("select_tournament_"))
+@router.callback_query(F.data.startswith("select_tournament_"))
 async def cq_show_tournament_menu(callback: types.CallbackQuery, state: FSMContext):
     """Handles tournament selection and shows the user menu for that tournament."""
     tournament_id = int(callback.data.split("_")[2])
@@ -73,8 +81,10 @@ async def cq_show_tournament_menu(callback: types.CallbackQuery, state: FSMConte
             await cmd_predict_start(callback, state)
             return
 
+    # Determine if current user is admin
+    is_admin = callback.from_user.id in ADMIN_IDS
     text = f"<b>Турнир: «{tournament.name}»</b>\nДата: {tournament.date.strftime('%d.%m.%Y')}\n\nВыберите действие:"
-    await callback.message.edit_text(text, reply_markup=tournament_user_menu_kb(tournament_id))
+    await callback.message.edit_text(text, reply_markup=tournament_user_menu_kb(tournament_id, tournament.status, is_admin)) 
     await callback.answer()
 
 @router.callback_query(MakeForecast.choosing_tournament, F.data.startswith("view_participants_"))
@@ -141,12 +151,7 @@ async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSM
     """Handles the 'Yes' confirmation to edit a forecast and starts the process."""
     parts = callback.data.split(":")
     if len(parts) < 3 or parts[2] != "yes":
-        # Handle 'No' confirmation or invalid format
-        # Attempt to go back to the forecast view
         try:
-            forecast_id = int(parts[1])
-            # This is a bit of a hack, we need to re-show the previous menu.
-            # For simplicity, we'll just delete the confirmation message.
             await callback.message.delete()
             await callback.answer("Редактирование отменено.")
         except (ValueError, IndexError):
@@ -156,7 +161,6 @@ async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSM
     forecast_id = int(parts[1])
 
     async with async_session() as session:
-        # Get the existing forecast to find the tournament
         forecast = await session.get(
             Forecast,
             forecast_id,
@@ -177,7 +181,7 @@ async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSM
         tournament_id=tournament.id,
         tournament_players={p.id: p.full_name for p in tournament.participants},
         forecast_list=[],
-        editing_forecast_id=forecast_id,  # Store the ID of the forecast being edited
+        editing_forecast_id=forecast_id,
     )
 
     kb = get_paginated_players_kb(players=tournament.participants, action="predict")
@@ -206,7 +210,6 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
     next_place = len(forecast_list) + 1
 
     if next_place <= 5:
-        # Ask for the next place
         player_objects = [Player(id=pid, full_name=name) for pid, name in players_dict.items()]
         kb = get_paginated_players_kb(
             players=player_objects,
@@ -218,7 +221,6 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
             reply_markup=kb
         )
     else:
-        # Move to confirmation
         await state.set_state(MakeForecast.confirming_forecast)
         
         final_forecast_text = "<b>Ваш итоговый прогноз:</b>\n"
@@ -237,7 +239,6 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
 async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     
-    # Ensure all data is present
     if not all(k in data for k in ["tournament_id", "forecast_list"]):
         await callback.message.edit_text(
             "Произошла ошибка, не вся информация для прогноза найдена. Попробуйте снова."
@@ -277,3 +278,186 @@ async def cq_predict_cancel(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("❌ Прогноз отменен.")
     await callback.answer()
+
+
+# --- View Other Forecasts Logic ---
+
+@router.callback_query(F.data.startswith("vof_summary:"))
+async def cq_view_other_forecasts(callback: types.CallbackQuery, state: FSMContext):
+    """Entry point to view others' forecasts (Detailed Summary)."""
+    parts = callback.data.split(":")
+    tournament_id = int(parts[1])
+    source = ":".join(parts[2:]) 
+    if not source:
+        source = "menu"
+    if source.startswith("hist_") and len(parts) >= 5: 
+         source = f"{parts[2]}_{parts[3]}_{parts[4]}"
+
+    user_id = callback.from_user.id
+    
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.forecasts)])
+        if not tournament:
+            await callback.answer("Турнир не найден.", show_alert=True)
+            return
+
+        is_admin = user_id in ADMIN_IDS
+        if tournament.status == TournamentStatus.OPEN and not is_admin:
+            await callback.answer("🔒 Прогнозы участников откроются после начала турнира!", show_alert=True)
+            return
+
+        forecasts = tournament.forecasts
+        if not forecasts:
+            await callback.answer("Пока нет прогнозов на этот турнир.", show_alert=True)
+            return
+
+        total_forecasts = len(forecasts)
+        
+        # Stats aggregation
+        stats = {} 
+        all_player_ids = set()
+
+        for f in forecasts:
+            for rank, player_id in enumerate(f.prediction_data):
+                place = rank + 1
+                points = 6 - place 
+                all_player_ids.add(player_id)
+                if player_id not in stats:
+                    stats[player_id] = {'points': 0, 1: 0, 2: 0, 3: 0}
+                stats[player_id]['points'] += points
+                if place <= 3:
+                    stats[player_id][place] += 1
+
+        # Batch fetch names
+        player_names_map = {}
+        if all_player_ids:
+            players_res = await session.execute(select(Player).where(Player.id.in_(all_player_ids)))
+            for p in players_res.scalars():
+                player_names_map[p.id] = p.full_name
+
+        text = f"📊 <b>Аналитика прогнозов «{tournament.name}»</b>\n"
+        text += f"Всего участников: <b>{total_forecasts}</b>\n\n"
+
+        text += "🧠 <b>Народный ТОП (мнение большинства):</b>\n"
+        text += "<i>(на основе суммы баллов за места)</i>\n"
+        
+        sorted_by_points = sorted(stats.items(), key=lambda x: x[1]['points'], reverse=True)[:5]
+        
+        for i, (pid, data) in enumerate(sorted_by_points):
+            p_name = player_names_map.get(pid, "Неизвестный")
+            text += f"{i+1}. <b>{p_name}</b> — {data['points']} баллов\n"
+        
+        text += "\n━━━━━━━━━━━━━━━━━━\n"
+
+        medals = {1: "🥇 Золото", 2: "🥈 Серебро", 3: "🥉 Бронза"}
+        
+        for place in range(1, 4):
+            text += f"\n<b>{medals[place]} (Фавориты):</b>\n"
+            candidates = [
+                (pid, data[place]) 
+                for pid, data in stats.items() 
+                if data.get(place, 0) > 0
+            ]
+            sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)[:3] 
+            
+            if not sorted_candidates:
+                text += "• Нет данных\n"
+            
+            for pid, count in sorted_candidates:
+                p_name = player_names_map.get(pid, "Неизвестный")
+                percent = int((count / total_forecasts) * 100)
+                bar = draw_progress_bar(percent, length=6)
+                text += f"• {p_name}\n   {bar} <b>{percent}%</b> ({count} чел.)\n"
+
+        text += "\n👇 Нажмите кнопку ниже, чтобы увидеть прогнозы каждого участника."
+        
+        await callback.message.edit_text(text, reply_markup=view_others_forecasts_menu_kb(tournament_id, source))
+
+
+@router.callback_query(F.data.startswith("vof_list:"))
+async def cq_view_other_forecasts_list(callback: types.CallbackQuery, state: FSMContext):
+    """Shows list of users who made forecasts."""
+    parts = callback.data.split(":")
+    tournament_id = int(parts[1])
+    page = int(parts[2])
+    source = ":".join(parts[3:])
+    if not source:
+        source = "menu"
+    if source.startswith("hist_") and len(parts) >= 6: 
+         source = f"{parts[3]}_{parts[4]}_{parts[5]}"
+    
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.forecasts).selectinload(Forecast.user)])
+        if not tournament:
+            await callback.answer("Tурнир не найден.", show_alert=True)
+            return
+        
+        forecasts = tournament.forecasts
+        
+    await callback.message.edit_text(
+        "📋 <b>Список прогнозистов</b>\nНажмите на участника, чтобы увидеть его прогноз:",
+        reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
+    )
+
+@router.callback_query(F.data.startswith("vof_paginate:"))
+async def cq_paginate_other_forecasts(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    tournament_id = int(parts[1])
+    page = int(parts[2])
+    source = ":".join(parts[3:]) 
+    if not source:
+        source = "menu"
+    if source.startswith("hist_") and len(parts) >= 6: 
+         source = f"{parts[3]}_{parts[4]}_{parts[5]}"
+    
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.forecasts).selectinload(Forecast.user)])
+        forecasts = tournament.forecasts
+        
+    await callback.message.edit_text(
+        "📋 <b>Список прогнозистов</b>\nНажмите на участника, чтобы увидеть его прогноз:",
+        reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
+    )
+
+@router.callback_query(F.data.startswith("vof_detail:"))
+async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    forecast_id = int(parts[1])
+    source = ":".join(parts[2:])
+    if not source:
+        source = "menu"
+    if source.startswith("hist_") and len(parts) >= 5: 
+         source = f"{parts[2]}_{parts[3]}_{parts[4]}"
+    
+    async with async_session() as session:
+        forecast = await session.get(Forecast, forecast_id, options=[selectinload(Forecast.user), selectinload(Forecast.tournament)])
+        if not forecast:
+            await callback.answer("Прогноз не найден.", show_alert=True)
+            return
+            
+        user_name = forecast.user.username or f"User {forecast.user.id}"
+        
+        # Batch fetch player names for the forecast
+        player_names_map = {}
+        if forecast.prediction_data:
+             players_res = await session.execute(select(Player).where(Player.id.in_(forecast.prediction_data)))
+             for p in players_res.scalars():
+                 player_names_map[p.id] = p.full_name
+
+        text = f"👤 <b>Прогноз {user_name}</b>\n\n"
+        
+        for rank, player_id in enumerate(forecast.prediction_data):
+            p_name = player_names_map.get(player_id, "Неизвестный")
+            medal = ""
+            if rank == 0: medal = "🥇 "
+            elif rank == 1: medal = "🥈 "
+            elif rank == 2: medal = "🥉 "
+            text += f"{medal}{rank+1}. {p_name}\n"
+            
+        if forecast.points_earned is not None:
+            text += f"\n💰 Очки: <b>{forecast.points_earned}</b>"
+            
+        await callback.message.edit_text(
+            text, 
+            reply_markup=view_single_forecast_back_kb(forecast.tournament_id, page=0, source=source)
+        )

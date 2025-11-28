@@ -14,6 +14,7 @@ from app.keyboards.inline import (
 )
 from app.db.models import User, Tournament, Forecast, TournamentStatus, Player
 from app.db.session import async_session
+from app.utils.formatting import format_player_list, get_medal_str
 
 router = Router()
 
@@ -80,9 +81,8 @@ async def handle_leaderboard(message: types.Message):
         return
 
     leaderboard_text = "<b>🏆 Топ-10 прогнозистов клуба:</b>\n\n"
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     for i, user in enumerate(top_users, 1):
-        place = medals.get(i, f" {i}.")
+        place = get_medal_str(i)
         username = user.username or "id" + str(user.id)
         leaderboard_text += f"{place} @{username} - <b>{user.total_points}</b> очков\n"
 
@@ -101,8 +101,8 @@ async def handle_rules(message: types.Message):
     <b>Начисление очков:</b>
     - За каждого угаданного игрока в Топ-5 вы получаете очки.
     - Чем ближе ваш прогноз к реальному месту, тем больше очков.
-    - Формула: <code>Очки = max(0, 100 - (|Прогноз - Факт| * 15))</code>
-    - <b>Бонус +20 очков</b> за точное попадание (место в место).
+    - Формула: <code>Очки = max(0, (100 - (|Прогноз - Факт| * 15)) / 10)</code>
+    - <b>Бонус +2 очка</b> за точное попадание (место в место).
     - Если игрок не попал в Топ-5, за него вы получаете 0 очков.
 
     Удачи!
@@ -110,7 +110,7 @@ async def handle_rules(message: types.Message):
     await message.answer(rules_text, parse_mode="HTML")
 
 
-@router.message(F.text == "🔮 Мои прогнозы")
+@router.message(F.text == "🔮 Прогнозы")
 async def handle_my_forecasts(message: types.Message):
     """
     Shows the menu for viewing active or past forecasts.
@@ -204,19 +204,22 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
         text = f"<b>Ваш прогноз на турнир «{forecast.tournament.name}» от {tournament_date}:</b>\n\n"
 
-        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-        for i, player_id in enumerate(player_ids):
-            place = medals.get(i, f" {i + 1}.")
-            player_name = players.get(player_id, "Неизвестный игрок")
-            text += f"{place} {player_name}\n"
+        text += format_player_list(player_ids, players)
 
         # Show 'Edit' button only for OPEN tournaments
+        # Also show 'Other Forecasts' button
         kb = (
             view_forecast_kb(
-                back_callback="forecasts:active", forecast_id=forecast.id
+                back_callback="forecasts:active", 
+                forecast_id=forecast.id, # ALWAYS PASS forecast.id HERE
+                tournament_id=tournament_id
             )
             if forecast.tournament.status == TournamentStatus.OPEN
-            else view_forecast_kb(back_callback="forecasts:active")
+            else view_forecast_kb(
+                back_callback="forecasts:active",
+                forecast_id=forecast.id, # ALWAYS PASS forecast.id HERE
+                tournament_id=tournament_id
+            )
         )
 
         await callback_query.message.edit_text(text, reply_markup=kb)
@@ -305,26 +308,29 @@ async def show_specific_history(callback_query: types.CallbackQuery):
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
         text = f"<b>История прогноза на турнир «{forecast.tournament.name}» от {tournament_date}</b>\n\n"
         text += "<b>📜 Ваш прогноз:</b>\n"
-        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-        for i, player_id in enumerate(pred_ids):
-            place = medals.get(i, f" {i + 1}.")
-            player_name = players.get(player_id, "?")
-            text += f"{place} {player_name}\n"
+        
+        text += format_player_list(pred_ids, players)
 
         text += "\n<b>🏆 Итоги турнира:</b>\n"
         # Sort results by rank
         sorted_results = sorted(
             forecast.tournament.results.items(), key=lambda item: item[1]
         )
+        
+        # Manual formatting for results as dict structure differs slightly
         for player_id_str, rank in sorted_results:
-            place = medals.get(rank - 1, f" {rank}.")
+            place = get_medal_str(rank)
             player_name = players.get(int(player_id_str), "?")
             text += f"{place} {player_name}\n"
 
         text += f"\n<b>💰 Очки за прогноз:</b> {forecast.points_earned or 0}"
 
+        # Pass tournament_id to enable 'Other Forecasts' button
         await callback_query.message.edit_text(
-            text, reply_markup=view_forecast_kb(back_callback=f"forecasts:history:{page}")
+            text, reply_markup=view_forecast_kb(
+                back_callback=f"forecasts:history:{page}",
+                forecast_id=forecast.id, # ALWAYS PASS forecast.id HERE
+                tournament_id=forecast.tournament_id
+            )
         )
     await callback_query.answer()
-
