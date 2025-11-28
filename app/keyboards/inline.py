@@ -72,7 +72,8 @@ def get_paginated_players_kb(
     page_players = available_players[start_index:end_index]
 
     for player in page_players:
-        builder.button(text=player.full_name, callback_data=f"{action}:{player.id}")
+        rating_str = f" ({player.current_rating})" if player.current_rating is not None else ""
+        builder.button(text=f"{player.full_name}{rating_str}", callback_data=f"{action}:{player.id}")
     builder.adjust(2)
 
     nav_buttons = []
@@ -144,11 +145,12 @@ def active_tournaments_kb(tournaments: List[Tournament]) -> InlineKeyboardMarkup
 def view_forecast_kb(
     back_callback: str, 
     forecast_id: int | None = None,
-    tournament_id: int | None = None
+    tournament_id: int | None = None,
+    allow_edit: bool = False
 ) -> InlineKeyboardMarkup:
     """Creates a keyboard with a dynamic back button and an optional edit button."""
     builder = InlineKeyboardBuilder()
-    if forecast_id:
+    if forecast_id and allow_edit:
         builder.button(
             text="✏️ Изменить прогноз", callback_data=f"edit_forecast_start:{forecast_id}"
         )
@@ -168,6 +170,7 @@ def view_forecast_kb(
                      pass
         
         builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:{source}")
+        builder.button(text="👥 Состав турнира", callback_data=f"vof_participants:{tournament_id}:{source}")
 
     builder.button(text="◀️ Назад к списку", callback_data=back_callback)
     builder.adjust(1)
@@ -463,4 +466,26 @@ def get_paginated_forecasts_list_kb(
 def view_single_forecast_back_kb(tournament_id: int, page: int = 0, source: str = "menu") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="◀️ Назад к списку", callback_data=f"vof_list:{tournament_id}:{page}:{source}")
+    return builder.as_markup()
+
+def view_participants_back_kb(tournament_id: int, source: str) -> InlineKeyboardMarkup:
+    """Back button for participants list when viewed from forecast."""
+    builder = InlineKeyboardBuilder()
+    
+    # Reuse logic from view_others_forecasts_menu_kb
+    if source == "menu":
+        builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
+    elif source == "active":
+        builder.button(text="◀️ Назад", callback_data=f"view_forecast:{tournament_id}")
+    elif source.startswith("hist_"):
+        try:
+            parts = source.split("_")
+            fid = parts[1]
+            page = parts[2]
+            builder.button(text="◀️ Назад", callback_data=f"view_history:{fid}:{page}")
+        except:
+             builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
+    else:
+        builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
+        
     return builder.as_markup()

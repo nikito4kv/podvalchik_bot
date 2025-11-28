@@ -17,7 +17,9 @@ from app.keyboards.inline import (
     tournament_selection_kb,
     view_others_forecasts_menu_kb,
     get_paginated_forecasts_list_kb,
-    view_single_forecast_back_kb
+    view_single_forecast_back_kb,
+    view_participants_back_kb,
+    view_forecast_kb
 )
 
 router = Router()
@@ -131,7 +133,10 @@ async def cq_predict_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(MakeForecast.making_prediction)
     await state.update_data(
         tournament_id=tournament_id,
-        tournament_players={p.id: p.full_name for p in players},
+        tournament_players={
+            p.id: f"{p.full_name} ({p.current_rating})" if p.current_rating is not None else p.full_name 
+            for p in players
+        },
         forecast_list=[]
     )
     
@@ -171,6 +176,10 @@ async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSM
             return
         
         tournament = forecast.tournament
+        if tournament.status != TournamentStatus.OPEN:
+            await callback.answer("⚠️ Редактирование запрещено! Турнир уже начался или завершен.", show_alert=True)
+            return
+
         if not tournament.participants:
             await callback.message.edit_text("В этом турнире пока нет зарегистрированных участников. Прогноз невозможен.")
             await state.clear()
@@ -179,7 +188,10 @@ async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSM
     await state.set_state(MakeForecast.making_prediction)
     await state.update_data(
         tournament_id=tournament.id,
-        tournament_players={p.id: p.full_name for p in tournament.participants},
+        tournament_players={
+            p.id: f"{p.full_name} ({p.current_rating})" if p.current_rating is not None else p.full_name 
+            for p in tournament.participants
+        },
         forecast_list=[],
         editing_forecast_id=forecast_id,
     )
@@ -210,9 +222,15 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
     next_place = len(forecast_list) + 1
 
     if next_place <= 5:
-        player_objects = [Player(id=pid, full_name=name) for pid, name in players_dict.items()]
+        # Ask for the next place
+        # Fetch players with ratings from DB for correct sorting
+        tournament_id = data.get("tournament_id")
+        async with async_session() as session:
+             tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+             players = tournament.participants
+
         kb = get_paginated_players_kb(
-            players=player_objects,
+            players=players,
             action="predict",
             selected_ids=forecast_list
         )
@@ -247,11 +265,14 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
         return
 
     editing_forecast_id = data.get("editing_forecast_id")
+    tournament_id = data.get("tournament_id")
+    forecast_list = data.get("forecast_list")
+    players_dict = data.get("tournament_players", {}) # Contains names with ratings now
 
     new_forecast = Forecast(
         user_id=callback.from_user.id,
-        tournament_id=data.get("tournament_id"),
-        prediction_data=data.get("forecast_list"),
+        tournament_id=tournament_id,
+        prediction_data=forecast_list,
     )
 
     async with async_session() as session:
@@ -262,13 +283,29 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
         
         session.add(new_forecast)
         await session.commit()
+        await session.refresh(new_forecast) # Get ID
         
-        message = (
-            "✅ Ваш прогноз обновлен!"
-            if editing_forecast_id
-            else "✅ Ваш прогноз принят!"
+        # Construct success message
+        text_header = "✅ Ваш прогноз обновлен!" if editing_forecast_id else "✅ Ваш прогноз принят!"
+        text_body = "\n\n<b>Ваш выбор:</b>\n"
+        
+        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        for i, pid in enumerate(forecast_list):
+            place = medals.get(i, f" {i+1}.")
+            player_name = players_dict.get(pid, "Неизвестный")
+            text_body += f"{place} {player_name}\n"
+            
+        # Show buttons to manage this forecast immediately
+        
+        await callback.message.edit_text(
+            text_header + text_body,
+            reply_markup=view_forecast_kb(
+                back_callback="predict_back_to_list",
+                forecast_id=new_forecast.id,
+                tournament_id=tournament_id,
+                allow_edit=True
+            )
         )
-        await callback.message.edit_text(message)
 
     await state.clear()
 
@@ -461,3 +498,37 @@ async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FS
             text, 
             reply_markup=view_single_forecast_back_kb(forecast.tournament_id, page=0, source=source)
         )
+
+@router.callback_query(F.data.startswith("vof_participants:"))
+async def cq_view_participants_from_forecast(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    tournament_id = int(parts[1])
+    source = ":".join(parts[2:])
+    if not source: source = "menu"
+    if source.startswith("hist_") and len(parts) >= 5: 
+         source = f"{parts[2]}_{parts[3]}_{parts[4]}"
+
+    async with async_session() as session:
+        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+        if not tournament:
+            await callback.answer("Турнир не найден.", show_alert=True)
+            return
+        
+        text = f"<b>Участники турнира «{tournament.name}»</b>\n\n"
+        if not tournament.participants:
+            text += "В этом турнире пока нет зарегистрированных участников."
+        else:
+            sorted_participants = sorted(
+                tournament.participants, 
+                key=lambda p: (-(p.current_rating or 0), p.full_name)
+            )
+            lines = []
+            for p in sorted_participants:
+                rating_str = f" ({p.current_rating})" if p.current_rating is not None else ""
+                lines.append(f"• {p.full_name}{rating_str}")
+            text += "\n".join(lines)
+            
+    await callback.message.edit_text(
+        text, 
+        reply_markup=view_participants_back_kb(tournament_id, source)
+    )

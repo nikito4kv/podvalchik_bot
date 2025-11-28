@@ -14,7 +14,7 @@ from app.keyboards.inline import (
 )
 from app.db.models import User, Tournament, Forecast, TournamentStatus, Player
 from app.db.session import async_session
-from app.utils.formatting import format_player_list, get_medal_str
+from app.utils.formatting import get_medal_str
 
 router = Router()
 
@@ -49,7 +49,7 @@ async def cmd_start(message: types.Message):
 
 
 @router.message(F.text == "📊 Моя статистика")
-async def handle_my_stats(message: types.Message):
+async def handle_my_stats(message: types.Message): # ADDED async
     async with async_session() as session:
         user = await session.get(User, message.from_user.id)
         if not user:
@@ -90,7 +90,7 @@ async def handle_leaderboard(message: types.Message):
 
 
 @router.message(F.text == "ℹ️ Правила")
-async def handle_rules(message: types.Message):
+async def handle_rules(message: types.Message): # ADDED async
     rules_text = """
     <b>Правила игры:</b>
 
@@ -111,7 +111,7 @@ async def handle_rules(message: types.Message):
 
 
 @router.message(F.text == "🔮 Прогнозы")
-async def handle_my_forecasts(message: types.Message):
+async def handle_my_forecasts(message: types.Message): # ADDED async
     """
     Shows the menu for viewing active or past forecasts.
     """
@@ -122,7 +122,7 @@ async def handle_my_forecasts(message: types.Message):
 
 
 @router.callback_query(F.data == "back_to_forecasts_menu")
-async def back_to_forecasts_menu(callback_query: types.CallbackQuery):
+async def back_to_forecasts_menu(callback_query: types.CallbackQuery): # ADDED async
     """
     Returns the user to the main forecasts menu.
     """
@@ -134,7 +134,7 @@ async def back_to_forecasts_menu(callback_query: types.CallbackQuery):
 
 
 @router.callback_query(F.data == "forecasts:active")
-async def show_active_forecasts(callback_query: types.CallbackQuery):
+async def show_active_forecasts(callback_query: types.CallbackQuery): # ADDED async
     """
     Shows a list of tournaments for which the user has an active forecast.
     """
@@ -165,7 +165,7 @@ async def show_active_forecasts(callback_query: types.CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("view_forecast:"))
-async def show_specific_forecast(callback_query: types.CallbackQuery):
+async def show_specific_forecast(callback_query: types.CallbackQuery): # ADDED async
     """
     Shows the user's specific forecast for a selected tournament.
     """
@@ -188,7 +188,7 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):
             await callback_query.answer("Прогноз не найден.", show_alert=True)
             return
 
-        # Fetch player names
+        # Fetch player objects
         player_ids = forecast.prediction_data
         if not player_ids:
             await callback_query.answer(
@@ -198,28 +198,31 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):
 
         players_stmt = select(Player).where(Player.id.in_(player_ids))
         result = await session.execute(players_stmt)
-        players = {p.id: p.full_name for p in result.scalars()}
+        players_map = {p.id: p for p in result.scalars()}
 
         # Format the message
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
         text = f"<b>Ваш прогноз на турнир «{forecast.tournament.name}» от {tournament_date}:</b>\n\n"
 
-        text += format_player_list(player_ids, players)
+        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        for i, player_id in enumerate(player_ids):
+            place = medals.get(i, f" {i + 1}.")
+            player = players_map.get(player_id)
+            if player:
+                rating_str = f" ({player.current_rating})" if player.current_rating is not None else ""
+                name_str = f"{player.full_name}{rating_str}"
+            else:
+                name_str = "Неизвестный игрок"
+            text += f"{place} {name_str}\n"
 
         # Show 'Edit' button only for OPEN tournaments
         # Also show 'Other Forecasts' button
-        kb = (
-            view_forecast_kb(
-                back_callback="forecasts:active", 
-                forecast_id=forecast.id, # ALWAYS PASS forecast.id HERE
-                tournament_id=tournament_id
-            )
-            if forecast.tournament.status == TournamentStatus.OPEN
-            else view_forecast_kb(
-                back_callback="forecasts:active",
-                forecast_id=forecast.id, # ALWAYS PASS forecast.id HERE
-                tournament_id=tournament_id
-            )
+        allow_edit = (forecast.tournament.status == TournamentStatus.OPEN)
+        kb = view_forecast_kb(
+            back_callback="forecasts:active", 
+            forecast_id=forecast.id,
+            tournament_id=tournament_id,
+            allow_edit=allow_edit
         )
 
         await callback_query.message.edit_text(text, reply_markup=kb)
@@ -227,7 +230,7 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("edit_forecast_start:"))
-async def cq_edit_forecast_start(callback_query: types.CallbackQuery):
+async def cq_edit_forecast_start(callback_query: types.CallbackQuery): # ADDED async
     """Asks for confirmation to edit a forecast."""
     forecast_id = int(callback_query.data.split(":")[1])
     text = "Вы уверены, что хотите изменить прогноз? Ваш старый прогноз будет заменен только **после сохранения нового**."
@@ -239,7 +242,7 @@ async def cq_edit_forecast_start(callback_query: types.CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("forecasts:history:"))
-async def show_forecast_history(callback_query: types.CallbackQuery):
+async def show_forecast_history(callback_query: types.CallbackQuery): # ADDED async
     """
     Shows a paginated list of the user's past forecasts.
     """
@@ -272,7 +275,7 @@ async def show_forecast_history(callback_query: types.CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("view_history:"))
-async def show_specific_history(callback_query: types.CallbackQuery):
+async def show_specific_history(callback_query: types.CallbackQuery): # ADDED async
     """
     Shows a detailed comparison for a past forecast.
     """
@@ -302,14 +305,22 @@ async def show_specific_history(callback_query: types.CallbackQuery):
 
         players_stmt = select(Player).where(Player.id.in_(all_player_ids))
         result = await session.execute(players_stmt)
-        players = {p.id: p.full_name for p in result.scalars()}
+        players_map = {p.id: p for p in result.scalars()}
 
         # Format message
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
         text = f"<b>История прогноза на турнир «{forecast.tournament.name}» от {tournament_date}</b>\n\n"
         text += "<b>📜 Ваш прогноз:</b>\n"
-        
-        text += format_player_list(pred_ids, players)
+        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        for i, player_id in enumerate(pred_ids):
+            place = medals.get(i, f" {i + 1}.")
+            player = players_map.get(player_id)
+            if player:
+                rating_str = f" ({player.current_rating})" if player.current_rating is not None else ""
+                name_str = f"{player.full_name}{rating_str}"
+            else:
+                name_str = "Неизвестный игрок"
+            text += f"{place} {name_str}\n"
 
         text += "\n<b>🏆 Итоги турнира:</b>\n"
         # Sort results by rank
@@ -317,11 +328,16 @@ async def show_specific_history(callback_query: types.CallbackQuery):
             forecast.tournament.results.items(), key=lambda item: item[1]
         )
         
-        # Manual formatting for results as dict structure differs slightly
+        # Manual formatting for results
         for player_id_str, rank in sorted_results:
             place = get_medal_str(rank)
-            player_name = players.get(int(player_id_str), "?")
-            text += f"{place} {player_name}\n"
+            player = players_map.get(int(player_id_str))
+            if player:
+                rating_str = f" ({player.current_rating})" if player.current_rating is not None else ""
+                name_str = f"{player.full_name}{rating_str}"
+            else:
+                name_str = "Неизвестный игрок"
+            text += f"{place} {name_str}\n"
 
         text += f"\n<b>💰 Очки за прогноз:</b> {forecast.points_earned or 0}"
 
@@ -330,7 +346,8 @@ async def show_specific_history(callback_query: types.CallbackQuery):
             text, reply_markup=view_forecast_kb(
                 back_callback=f"forecasts:history:{page}",
                 forecast_id=forecast.id, # ALWAYS PASS forecast.id HERE
-                tournament_id=forecast.tournament_id
+                tournament_id=forecast.tournament_id,
+                allow_edit=False
             )
         )
     await callback_query.answer()
