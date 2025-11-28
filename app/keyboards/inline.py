@@ -53,7 +53,7 @@ def get_paginated_players_kb(
         selected_ids = []
 
     available_players = sorted(
-        [p for p in players if p.id not in selected_ids], key=lambda p: p.full_name
+        [p for p in players if p.id not in selected_ids], key=lambda p: (-(p.current_rating or 0), p.full_name)
     )
 
     builder = InlineKeyboardBuilder()
