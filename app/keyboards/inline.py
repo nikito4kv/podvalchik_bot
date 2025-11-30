@@ -20,6 +20,7 @@ def tournament_selection_kb(tournaments: List[Tournament]) -> InlineKeyboardMark
 
 def tournament_user_menu_kb(tournament_id: int, tournament_status: TournamentStatus, is_admin: bool, user_has_forecast: bool = False) -> InlineKeyboardMarkup:
     """Creates a user menu for a selected tournament."""
+    print(f"DEBUG KB: id={tournament_id}, status={tournament_status}, is_admin={is_admin}, has_forecast={user_has_forecast}")
     builder = InlineKeyboardBuilder()
     
     if user_has_forecast:
@@ -29,8 +30,12 @@ def tournament_user_menu_kb(tournament_id: int, tournament_status: TournamentSta
         
     builder.button(text="👥 Список участников", callback_data=f"view_participants_{tournament_id}")
     
+    # Safe check handles both Enum object and string "OPEN"
+    # SQLAlchemy with SQLite sometimes returns strings for Enums
+    status_str = tournament_status.name if hasattr(tournament_status, "name") else str(tournament_status)
+    
     # Show "View Other Forecasts" only if LIVE/FINISHED or if admin
-    if tournament_status != TournamentStatus.OPEN or is_admin:
+    if status_str != "OPEN" or is_admin:
         builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:menu")
         
     builder.button(text="◀️ Назад", callback_data="predict_back_to_list")
@@ -151,7 +156,8 @@ def view_forecast_kb(
     back_callback: str, 
     forecast_id: int | None = None,
     tournament_id: int | None = None,
-    allow_edit: bool = False
+    allow_edit: bool = False,
+    show_others: bool = False
 ) -> InlineKeyboardMarkup:
     """Creates a keyboard with a dynamic back button and an optional edit button."""
     builder = InlineKeyboardBuilder()
@@ -174,7 +180,9 @@ def view_forecast_kb(
                  except:
                      pass
         
-        builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:{source}")
+        if show_others:
+            builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:{source}")
+            
         builder.button(text="👥 Состав турнира", callback_data=f"vof_participants:{tournament_id}:{source}")
 
     builder.button(text="◀️ Назад к списку", callback_data=back_callback)
@@ -302,6 +310,16 @@ def enter_rating_fsm_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def new_player_rating_kb() -> InlineKeyboardMarkup:
+    """Keyboard for new player rating input (Skip option)."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➡️ Пропустить (без рейтинга)", callback_data="new_rating:skip")
+    # No cancel here? Or maybe Cancel adding?
+    # If we cancel, we have created a player but not added to tournament. Ideally we should delete him or just ignore.
+    # Let's just allow skip.
+    return builder.as_markup()
+
+
 def get_paginated_players_management_kb(
     players: List[Player],
     view_mode: str = "active", # 'active' or 'archived'
@@ -409,6 +427,8 @@ def view_others_forecasts_menu_kb(tournament_id: int, source: str) -> InlineKeyb
         builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
     elif source == "active":
         builder.button(text="◀️ Назад", callback_data=f"view_forecast:{tournament_id}")
+    elif source == "tm_menu":
+        builder.button(text="◀️ Назад", callback_data=f"manage_tournament_{tournament_id}")
     elif source.startswith("hist_"):
         # hist_FID_PAGE
         try:
@@ -492,6 +512,8 @@ def view_participants_back_kb(tournament_id: int, source: str) -> InlineKeyboard
         builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
     elif source == "active":
         builder.button(text="◀️ Назад", callback_data=f"view_forecast:{tournament_id}")
+    elif source == "tm_menu":
+        builder.button(text="◀️ Назад", callback_data=f"manage_tournament_{tournament_id}")
     elif source.startswith("hist_"):
         try:
             parts = source.split("_")

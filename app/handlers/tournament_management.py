@@ -19,7 +19,8 @@ from app.keyboards.inline import (
     cancel_fsm_kb,
     admin_menu_kb,
     get_paginated_tournaments_kb,
-    enter_rating_fsm_kb
+    enter_rating_fsm_kb,
+    new_player_rating_kb
 )
 from app.core.scoring import calculate_forecast_points, calculate_new_stats
 from app.utils.formatting import format_player_list, get_medal_str
@@ -120,18 +121,21 @@ def tournament_management_menu_kb(tournament: Tournament) -> types.InlineKeyboar
     if tournament.status == TournamentStatus.LIVE:
         builder.button(text="✏️ Ввести результаты", callback_data=f"tm_set_results_start_{tournament_id}")
     
+    # Admin can always view forecasts (analytics)
+    builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:tm_menu")
+
     builder.button(text="❌ Удалить турнир", callback_data=f"tm_delete_{tournament_id}")
     builder.button(text="◀️ Назад к списку", callback_data="tm_back_to_list")
     
     # Adjust layout based on status
     if tournament.status == TournamentStatus.DRAFT:
-         builder.adjust(2, 1, 1, 2)
-    elif tournament.status == TournamentStatus.OPEN:
          builder.adjust(2, 1, 1, 1, 2)
+    elif tournament.status == TournamentStatus.OPEN:
+         builder.adjust(2, 1, 1, 1, 1, 2)
     elif tournament.status == TournamentStatus.LIVE:
-         builder.adjust(1, 1, 1, 2) # New adjustment for LIVE
+         builder.adjust(1, 1, 1, 1, 2)
     else: # FINISHED
-        builder.adjust(1, 2)
+        builder.adjust(1, 1, 2)
         
     return builder.as_markup()
 
@@ -277,10 +281,16 @@ async def cq_create_tournament_finish(callback: types.CallbackQuery, state: FSMC
         new_tournament = Tournament(name=name, date=event_date, prediction_count=count)
         session.add(new_tournament)
         await session.commit()
+        # Refresh to get the ID
+        await session.refresh(new_tournament)
+        
         await callback.message.edit_text(f"✅ Турнир '{name}' на {event_date.strftime('%d.%m.%Y')} успешно создан (Топ-{count}).")
-    
+        # Show menu for the NEW tournament
+        new_tournament_id = new_tournament.id
+
     await state.clear()
-    await cmd_manage_tournaments(callback, state)
+    # We need to pass the ID. Since show_tournament_menu creates its own session, passing ID is fine.
+    await show_tournament_menu(callback, state, new_tournament_id)
 
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_delete_"))
@@ -329,7 +339,8 @@ async def add_player_to_tournament_logic(message: types.Message | types.Callback
             await notify_predictors_of_change(message.bot, session, tournament, player, "added")
             
             if isinstance(message, types.CallbackQuery):
-                await message.answer(text, show_alert=True)
+                await message.message.answer(text)
+                await message.answer()
             else:
                 await message.answer(text)
         else:
@@ -565,15 +576,41 @@ async def msg_add_participant_create_and_add(message: types.Message, state: FSMC
             
             await state.update_data(selected_player_id=new_player.id)
             
-            text = f"✅ Новый игрок <b>{new_player.full_name}</b> создан.\nРейтинга пока нет.\n\nЧто делаем?"
-            builder = InlineKeyboardBuilder()
-            builder.button(text="✏️ Установить рейтинг", callback_data="rating:change")
-            builder.button(text="🗑 Без рейтинга", callback_data="rating:clear")
-            builder.button(text="↩️ Отмена (не добавлять)", callback_data="rating:cancel")
-            builder.adjust(1, 1)
+            text = (
+                f"✅ Новый игрок <b>{new_player.full_name}</b> создан.\n\n"
+                "Введите его рейтинг (целое число) или нажмите кнопку, чтобы оставить без рейтинга:"
+            )
             
-            await state.set_state(TournamentManagement.adding_participant_rating_options)
-            await message.answer(text, reply_markup=builder.as_markup())
+            await state.set_state(TournamentManagement.adding_new_participant_rating)
+            await message.answer(text, reply_markup=new_player_rating_kb())
+
+@router.message(TournamentManagement.adding_new_participant_rating)
+async def msg_new_player_rating_input(message: types.Message, state: FSMContext):
+    try:
+        new_rating = int(message.text.strip())
+    except ValueError:
+        await message.answer("Пожалуйста, введите целое число или нажмите кнопку 'Пропустить'.")
+        return
+
+    data = await state.get_data()
+    player_id = data.get("selected_player_id")
+    tournament_id = data.get("managed_tournament_id")
+
+    async with async_session() as session:
+        player = await session.get(Player, player_id)
+        player.current_rating = new_rating
+        await session.commit()
+    
+    await add_player_to_tournament_logic(message, state, player_id, tournament_id)
+
+@router.callback_query(TournamentManagement.adding_new_participant_rating, F.data == "new_rating:skip")
+async def cq_new_player_rating_skip(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    player_id = data.get("selected_player_id")
+    tournament_id = data.get("managed_tournament_id")
+    
+    # Player already has None rating by default, just add to tournament
+    await add_player_to_tournament_logic(callback, state, player_id, tournament_id)
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_remove_participant_start_"))
 async def cq_remove_participant_start(callback: types.CallbackQuery, state: FSMContext):
@@ -664,6 +701,10 @@ async def cq_close_bets(callback: types.CallbackQuery, state: FSMContext):
         tournament.status = TournamentStatus.LIVE
         await session.commit()
         await callback.answer("✅ Прием ставок закрыт. Статус изменен на LIVE.", show_alert=True)
+        
+        # Notify forecasters
+        asyncio.create_task(notify_forecasters_status_change(callback.bot, tournament.id, tournament.name, "LIVE"))
+
     await show_tournament_menu(callback, state, tournament_id)
 
 
@@ -681,7 +722,39 @@ async def cq_open_bets(callback: types.CallbackQuery, state: FSMContext):
         tournament.status = TournamentStatus.OPEN
         await session.commit()
         await callback.answer("✅ Прием ставок снова открыт. Статус изменен на OPEN.", show_alert=True)
+        
+        # Notify forecasters
+        asyncio.create_task(notify_forecasters_status_change(callback.bot, tournament.id, tournament.name, "OPEN"))
+
     await show_tournament_menu(callback, state, tournament_id)
+
+
+async def notify_forecasters_status_change(bot: Bot, tournament_id: int, tournament_name: str, new_status: str):
+    """Notifies users who predicted on this tournament about status change."""
+    async with async_session() as session:
+        # Get user IDs who made a forecast
+        result = await session.execute(select(Forecast.user_id).where(Forecast.tournament_id == tournament_id))
+        user_ids = result.scalars().all()
+    
+    if not user_ids:
+        return
+
+    builder = InlineKeyboardBuilder()
+    
+    if new_status == "LIVE":
+        text = (
+            f"🔐 <b>Ставки на турнир «{tournament_name}» закрыты!</b>\n\n"
+            "Турнир начался. Теперь вы можете посмотреть прогнозы других участников и болеть за своих фаворитов!"
+        )
+        builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:active")
+    else: # OPEN
+        text = (
+            f"🔓 <b>Прием ставок на турнир «{tournament_name}» возобновлен!</b>\n\n"
+            "Если вы хотели изменить свой прогноз, сейчас самое время."
+        )
+        builder.button(text="👀 Мой прогноз", callback_data=f"view_forecast:{tournament_id}")
+    
+    await broadcast_message(bot, user_ids, text, reply_markup=builder.as_markup())
 
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_set_results_start_"))

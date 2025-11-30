@@ -12,6 +12,7 @@ class TournamentManagement(StatesGroup):
     adding_participant_creating_new = State()
     adding_participant_rating_options = State()
     adding_participant_entering_rating = State()
+    adding_new_participant_rating = State()
     
     removing_participant_choosing_player = State()
 

@@ -15,6 +15,7 @@ from app.keyboards.inline import (
 from app.db.models import User, Tournament, Forecast, TournamentStatus, Player
 from app.db.session import async_session
 from app.utils.formatting import get_medal_str
+from app.config import ADMIN_IDS
 
 router = Router()
 
@@ -94,16 +95,14 @@ async def handle_rules(message: types.Message): # ADDED async
     rules_text = """
     <b>Правила игры:</b>
 
-    1.  Перед каждым турниром вы делаете прогноз на <b>Топ-5</b> мест.
-    2.  Выбор 5 <b>уникальных</b> игроков обязателен.
+    1.  Перед каждым турниром вы делаете прогноз на Top-3 или Top-5 мест (зависит от настроек турнира).
+    2.  Выбор уникальных игроков обязателен.
     3.  Прием прогнозов закрывается перед началом турнира.
 
-    <b>Начисление очков:</b>
-    - За каждого угаданного игрока в Топ-5 вы получаете очки.
-    - Чем ближе ваш прогноз к реальному месту, тем больше очков.
-    - Формула: <code>Очки = max(0, (100 - (|Прогноз - Факт| * 15)) / 10)</code>
-    - <b>Бонус +2 очка</b> за точное попадание (место в место).
-    - Если игрок не попал в Топ-5, за него вы получаете 0 очков.
+    <b>Начисление очков (система РТТФ):</b>
+    - <b>1 очко</b>: За каждого угаданного призера (игрок попал в Top, но место угадано неверно).
+    - <b>5 очков</b>: За каждого угаданного призера, чье место совпало с прогнозом.
+    - <b>БОНУС +15 очков</b>: Если вы угадали всех призеров и их места.
 
     Удачи!
     """
@@ -216,13 +215,19 @@ async def show_specific_forecast(callback_query: types.CallbackQuery): # ADDED a
             text += f"{place} {name_str}\n"
 
         # Show 'Edit' button only for OPEN tournaments
-        # Also show 'Other Forecasts' button
         allow_edit = (forecast.tournament.status == TournamentStatus.OPEN)
+        
+        # Show 'Other Forecasts' only if NOT OPEN or if admin
+        is_admin = user_id in ADMIN_IDS
+        status_str = forecast.tournament.status.name if hasattr(forecast.tournament.status, "name") else str(forecast.tournament.status)
+        show_others = (status_str != "OPEN") or is_admin
+
         kb = view_forecast_kb(
             back_callback="forecasts:active", 
             forecast_id=forecast.id,
             tournament_id=tournament_id,
-            allow_edit=allow_edit
+            allow_edit=allow_edit,
+            show_others=show_others
         )
 
         await callback_query.message.edit_text(text, reply_markup=kb)
@@ -233,7 +238,7 @@ async def show_specific_forecast(callback_query: types.CallbackQuery): # ADDED a
 async def cq_edit_forecast_start(callback_query: types.CallbackQuery): # ADDED async
     """Asks for confirmation to edit a forecast."""
     forecast_id = int(callback_query.data.split(":")[1])
-    text = "Вы уверены, что хотите изменить прогноз? Ваш старый прогноз будет заменен только **после сохранения нового**."
+    text = "Вы уверены, что хотите изменить прогноз? Ваш старый прогноз будет заменен только <b>после сохранения нового</b>."
     await callback_query.message.edit_text(
         text,
         reply_markup=confirmation_kb(action_prefix=f"edit_confirm:{forecast_id}"),
@@ -342,12 +347,14 @@ async def show_specific_history(callback_query: types.CallbackQuery): # ADDED as
         text += f"\n<b>💰 Очки за прогноз:</b> {forecast.points_earned or 0}"
 
         # Pass tournament_id to enable 'Other Forecasts' button
+        # History implies finished, so show_others=True
         await callback_query.message.edit_text(
             text, reply_markup=view_forecast_kb(
                 back_callback=f"forecasts:history:{page}",
                 forecast_id=forecast.id, # ALWAYS PASS forecast.id HERE
                 tournament_id=forecast.tournament_id,
-                allow_edit=False
+                allow_edit=False,
+                show_others=True
             )
         )
     await callback_query.answer()
