@@ -6,11 +6,11 @@ main_menu = ReplyKeyboardMarkup(
             KeyboardButton(text="🏁 Актуальные турниры"),
         ],
         [
-            KeyboardButton(text="🔮 Прогнозы"),
+            KeyboardButton(text="🏆 Рейтинг клуба"),
             KeyboardButton(text="📊 Моя статистика"),
         ],
         [
-            KeyboardButton(text="🏆 Рейтинг клуба"),
+            KeyboardButton(text="🗂 Архив прогнозов"),
             KeyboardButton(text="ℹ️ Правила"),
         ],
     ],

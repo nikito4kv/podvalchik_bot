@@ -11,9 +11,11 @@ from app.keyboards.inline import (
     admin_menu_kb,
     player_management_menu_kb,
     player_management_back_kb,
-    enter_rating_fsm_kb
+    enter_rating_fsm_kb,
+    add_global_player_success_kb
 )
 from app.states.player_management import PlayerManagement
+from app.states.tournament_management import TournamentManagement
 
 router = Router()
 router.message.filter(IsAdmin())
@@ -99,7 +101,10 @@ async def cq_back_to_list(callback: types.CallbackQuery, state: FSMContext):
 async def cq_back_to_admin_main(callback: types.CallbackQuery, state: FSMContext):
     """Back to main admin menu."""
     await state.clear()
+    # Restore the state required for the admin dashboard to work
+    await state.set_state(TournamentManagement.choosing_tournament)
     await callback.message.edit_text("<b>🔧 Панель администратора</b>", reply_markup=admin_menu_kb())
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("pm_select:"))
@@ -151,7 +156,7 @@ async def cq_skip_rating(callback: types.CallbackQuery, state: FSMContext):
         new_player = Player(full_name=name, current_rating=None, is_active=True)
         session.add(new_player)
         await session.commit()
-        await callback.message.edit_text(f"✅ Игрок <b>{name}</b> успешно добавлен!", reply_markup=player_management_back_kb())
+        await callback.message.edit_text(f"✅ Игрок <b>{name}</b> успешно добавлен!", reply_markup=add_global_player_success_kb())
     
     await state.clear()
 
@@ -176,7 +181,7 @@ async def msg_add_player_rating(message: types.Message, state: FSMContext):
         new_player = Player(full_name=name, current_rating=rating, is_active=True)
         session.add(new_player)
         await session.commit()
-        await message.answer(f"✅ Игрок <b>{name}</b> с рейтингом {rating} успешно добавлен!", reply_markup=player_management_back_kb())
+        await message.answer(f"✅ Игрок <b>{name}</b> с рейтингом {rating} успешно добавлен!", reply_markup=add_global_player_success_kb())
     
     await state.clear()
 
