@@ -19,14 +19,16 @@ router = Router()
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
-async def show_players_list(message_or_cb: types.Message | types.CallbackQuery, state: FSMContext, page: int = 0):
+async def show_players_list(message_or_cb: types.Message | types.CallbackQuery, state: FSMContext, page: int = 0, view_mode: str = "active"):
     """Helper to show the list of players."""
     async with async_session() as session:
         result = await session.execute(select(Player))
         players = result.scalars().all()
 
-    kb = get_paginated_players_management_kb(players, page=page)
-    text = "<b>👥 Управление игроками</b>\n\nВыберите игрока для редактирования или добавьте нового.\n❌ - игрок архивирован (удален)."
+    kb = get_paginated_players_management_kb(players, view_mode=view_mode, page=page)
+    
+    title = "👤 Активные игроки" if view_mode == "active" else "🗄 Архив игроков"
+    text = f"<b>{title}</b>\n\nВыберите игрока для редактирования или добавьте нового."
     
     if isinstance(message_or_cb, types.Message):
         await message_or_cb.answer(text, reply_markup=kb)
@@ -55,29 +57,42 @@ async def show_player_details(callback: types.CallbackQuery, player_id: int):
 async def cmd_players(message: types.Message, state: FSMContext):
     """Entry point via command."""
     await state.clear()
-    await show_players_list(message, state, page=0)
+    await show_players_list(message, state, page=0, view_mode="active")
 
 
 @router.callback_query(F.data.startswith("pm_list_players:"))
 async def cq_list_players(callback: types.CallbackQuery, state: FSMContext):
     """Entry point via admin menu or back button."""
-    page = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    page = int(parts[1])
+    # Default to active if not specified (backward compatibility)
+    view_mode = parts[2] if len(parts) > 2 else "active"
+    
     await state.clear()
-    await show_players_list(callback, state, page=page)
+    await show_players_list(callback, state, page=page, view_mode=view_mode)
 
 
 @router.callback_query(F.data.startswith("pm_paginate:"))
 async def cq_paginate_players(callback: types.CallbackQuery, state: FSMContext):
     """Handle pagination."""
-    page = int(callback.data.split(":")[1])
-    await show_players_list(callback, state, page=page)
+    parts = callback.data.split(":")
+    view_mode = parts[1]
+    page = int(parts[2])
+    await show_players_list(callback, state, page=page, view_mode=view_mode)
+
+@router.callback_query(F.data.startswith("pm_switch:"))
+async def cq_switch_view_mode(callback: types.CallbackQuery, state: FSMContext):
+    """Handle switching between active and archived."""
+    view_mode = callback.data.split(":")[1]
+    await show_players_list(callback, state, page=0, view_mode=view_mode)
 
 
 @router.callback_query(F.data == "pm_back_list")
 async def cq_back_to_list(callback: types.CallbackQuery, state: FSMContext):
     """Back to list from detail view."""
+    # Ideally we should remember the previous view_mode, but defaulting to active is safe for now
     await state.clear()
-    await show_players_list(callback, state, page=0)
+    await show_players_list(callback, state, page=0, view_mode="active")
 
 
 @router.callback_query(F.data == "admin_back_main")

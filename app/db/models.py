@@ -32,6 +32,7 @@ class User(Base):
     username = Column(String)
     balance = Column(Integer, default=0)
     total_points = Column(Integer, default=0)
+    total_slots = Column(Integer, default=0) # Общее количество угадываемых мест во всех прогнозах
     accuracy_rate = Column(Float, default=0.0)
     avg_error = Column(Float, default=0.0)
 
@@ -66,6 +67,7 @@ class Tournament(Base):
     name = Column(String, nullable=False)
     date = Column(Date, nullable=False)
     status = Column(Enum(TournamentStatus), default=TournamentStatus.DRAFT)
+    prediction_count = Column(Integer, default=5)
     results = Column(JSON)  # {"player_id": rank}
 
     forecasts = relationship("Forecast", back_populates="tournament")

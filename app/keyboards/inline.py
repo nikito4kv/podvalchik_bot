@@ -18,10 +18,15 @@ def tournament_selection_kb(tournaments: List[Tournament]) -> InlineKeyboardMark
     return builder.as_markup()
 
 
-def tournament_user_menu_kb(tournament_id: int, tournament_status: TournamentStatus, is_admin: bool) -> InlineKeyboardMarkup:
+def tournament_user_menu_kb(tournament_id: int, tournament_status: TournamentStatus, is_admin: bool, user_has_forecast: bool = False) -> InlineKeyboardMarkup:
     """Creates a user menu for a selected tournament."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="🔮 Сделать прогноз", callback_data=f"predict_start_{tournament_id}")
+    
+    if user_has_forecast:
+        builder.button(text="👀 Мой прогноз", callback_data=f"view_forecast:{tournament_id}")
+    else:
+        builder.button(text="🔮 Сделать прогноз", callback_data=f"predict_start_{tournament_id}")
+        
     builder.button(text="👥 Список участников", callback_data=f"view_participants_{tournament_id}")
     
     # Show "View Other Forecasts" only if LIVE/FINISHED or if admin
@@ -72,8 +77,8 @@ def get_paginated_players_kb(
     page_players = available_players[start_index:end_index]
 
     for player in page_players:
-        rating_str = f" ({player.current_rating})" if player.current_rating is not None else ""
-        builder.button(text=f"{player.full_name}{rating_str}", callback_data=f"{action}:{player.id}")
+        rating_str = f"[{player.current_rating}] " if player.current_rating is not None else ""
+        builder.button(text=f"{rating_str}{player.full_name}", callback_data=f"{action}:{player.id}")
     builder.adjust(2)
 
     nav_buttons = []
@@ -299,31 +304,35 @@ def enter_rating_fsm_kb() -> InlineKeyboardMarkup:
 
 def get_paginated_players_management_kb(
     players: List[Player],
+    view_mode: str = "active", # 'active' or 'archived'
     page: int = 0,
     page_size: int = 8,
 ) -> InlineKeyboardMarkup:
     """
-    Creates a paginated keyboard for player management.
+    Creates a paginated keyboard for player management, filtering by view_mode.
     """
-    # Sorting: Active first, then Alphabetical
-    available_players = sorted(
-        players, key=lambda p: (not (p.is_active if p.is_active is not None else True), p.full_name)
-    )
+    # Filter based on view_mode
+    if view_mode == "active":
+        filtered_players = [p for p in players if (p.is_active if p.is_active is not None else True)]
+    else:
+        filtered_players = [p for p in players if not (p.is_active if p.is_active is not None else True)]
+
+    # Sorting: Alphabetical
+    sorted_players = sorted(filtered_players, key=lambda p: p.full_name)
 
     builder = InlineKeyboardBuilder()
-    total_players = len(available_players)
+    total_players = len(sorted_players)
     total_pages = max(1, math.ceil(total_players / page_size))
     page = max(0, min(page, total_pages - 1))
 
     start_index = page * page_size
     end_index = start_index + page_size
-    page_players = available_players[start_index:end_index]
+    page_players = sorted_players[start_index:end_index]
 
     for player in page_players:
-        is_active = player.is_active if player.is_active is not None else True
-        status_icon = "" if is_active else "❌ "
+        rating_str = f"[{player.current_rating}] " if player.current_rating is not None else ""
         builder.button(
-            text=f"{status_icon}{player.full_name}", 
+            text=f"{rating_str}{player.full_name}", 
             callback_data=f"pm_select:{player.id}"
         )
     builder.adjust(2)
@@ -333,7 +342,7 @@ def get_paginated_players_management_kb(
         if page > 0:
             nav_buttons.append(
                 InlineKeyboardButton(
-                    text="◀️", callback_data=f"pm_paginate:{page-1}"
+                    text="◀️", callback_data=f"pm_paginate:{view_mode}:{page-1}"
                 )
             )
         nav_buttons.append(
@@ -342,11 +351,17 @@ def get_paginated_players_management_kb(
         if page < total_pages - 1:
             nav_buttons.append(
                 InlineKeyboardButton(
-                    text="▶️", callback_data=f"pm_paginate:{page+1}"
+                    text="▶️", callback_data=f"pm_paginate:{view_mode}:{page+1}"
                 )
             )
     if nav_buttons:
         builder.row(*nav_buttons)
+
+    # Switch mode button
+    if view_mode == "active":
+        builder.row(InlineKeyboardButton(text="📂 Показать архив", callback_data="pm_switch:archived"))
+    else:
+        builder.row(InlineKeyboardButton(text="📂 Показать активных", callback_data="pm_switch:active"))
 
     builder.row(
         InlineKeyboardButton(text="➕ Добавить игрока", callback_data="pm_add_new")

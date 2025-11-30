@@ -23,6 +23,7 @@ from app.keyboards.inline import (
 )
 from app.core.scoring import calculate_forecast_points, calculate_new_stats
 from app.utils.formatting import format_player_list, get_medal_str
+from app.utils.broadcaster import broadcast_message
 
 
 router = Router()
@@ -251,17 +252,35 @@ async def msg_create_tournament_date(message: types.Message, state: FSMContext):
         await message.answer("Неверный формат даты. Используйте ДД.ММ.ГГГГ. Попробуйте еще раз.")
         return
     
+    await state.update_data(date=event_date.isoformat())
+    await state.set_state(TournamentManagement.creating_tournament_select_prediction_count)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="3 места", callback_data="pred_count:3")
+    builder.button(text="5 мест", callback_data="pred_count:5")
+    builder.adjust(2)
+    builder.row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="fsm_cancel"))
+    
+    await message.answer(
+        "Сколько мест нужно будет угадать в этом турнире?",
+        reply_markup=builder.as_markup()
+    )
+
+@router.callback_query(TournamentManagement.creating_tournament_select_prediction_count, F.data.startswith("pred_count:"))
+async def cq_create_tournament_finish(callback: types.CallbackQuery, state: FSMContext):
+    count = int(callback.data.split(":")[1])
     data = await state.get_data()
     name = data.get("name")
+    event_date = datetime.date.fromisoformat(data.get("date"))
 
     async with async_session() as session:
-        new_tournament = Tournament(name=name, date=event_date)
+        new_tournament = Tournament(name=name, date=event_date, prediction_count=count)
         session.add(new_tournament)
         await session.commit()
-        await message.answer(f"✅ Турнир '{name}' на {event_date.strftime('%d.%m.%Y')} успешно создан.")
+        await callback.message.edit_text(f"✅ Турнир '{name}' на {event_date.strftime('%d.%m.%Y')} успешно создан (Топ-{count}).")
     
     await state.clear()
-    await cmd_manage_tournaments(message, state)
+    await cmd_manage_tournaments(callback, state)
 
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_delete_"))
@@ -503,6 +522,13 @@ async def cq_rating_cancel(callback: types.CallbackQuery, state: FSMContext):
     await show_add_participant_menu(callback, state)
     await callback.answer()
 
+@router.callback_query(TournamentManagement.adding_participant_choosing_player, F.data.startswith("add_player:"))
+async def cq_add_participant_select(callback: types.CallbackQuery, state: FSMContext):
+    """Handles selection of an existing player to add."""
+    player_id = int(callback.data.split(":")[1])
+    await state.update_data(selected_player_id=player_id)
+    await show_rating_options_menu(callback, state, player_id)
+
 @router.callback_query(TournamentManagement.adding_participant_choosing_player, F.data == "create_new:add_player")
 async def cq_add_participant_create_new(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(TournamentManagement.adding_participant_creating_new)
@@ -592,7 +618,36 @@ async def cq_publish_tournament(callback: types.CallbackQuery, state: FSMContext
         tournament.status = TournamentStatus.OPEN
         await session.commit()
         await callback.answer("✅ Турнир опубликован и открыт для прогнозов.", show_alert=True)
+        
+        # --- Broadcast Notification ---
+        # Run in background. We pass IDs/data, NOT the session.
+        asyncio.create_task(notify_users_about_new_tournament(callback.bot, tournament.id, tournament.name, tournament.date))
+
     await show_tournament_menu(callback, state, tournament_id)
+
+
+async def notify_users_about_new_tournament(bot: Bot, tournament_id: int, tournament_name: str, tournament_date: datetime.date):
+    """Helper to broadcast the new tournament notification."""
+    # Create a NEW session for this background task
+    async with async_session() as session:
+        users_res = await session.execute(select(User.id))
+        user_ids = users_res.scalars().all()
+    
+    if not user_ids:
+        return
+
+    text = (
+        f"📢 <b>Новый турнир открыт для прогнозов!</b>\n\n"
+        f"🏓 <b>«{tournament_name}»</b>\n"
+        f"📅 Дата: {tournament_date.strftime('%d.%m.%Y')}\n\n"
+        f"Успейте сделать свой прогноз и побороться за очки! 👇"
+    )
+    
+    # Direct link to the tournament menu
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔮 Сделать прогноз", callback_data=f"select_tournament_{tournament_id}")
+    
+    await broadcast_message(bot, user_ids, text, reply_markup=builder.as_markup())
 
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data.startswith("tm_close_bets_"))
@@ -637,38 +692,51 @@ async def cq_set_results_start(callback: types.CallbackQuery, state: FSMContext)
     if tournament.status != TournamentStatus.LIVE:
         await callback.answer(f"Нельзя ввести результаты для этого турнира. Текущий статус: {tournament.status.name}", show_alert=True)
         return
-    if not tournament.participants or len(tournament.participants) < 5:
-        await callback.answer(f"Недостаточно участников в турнире ({len(tournament.participants)}) для ввода результатов.", show_alert=True)
+    
+    prediction_count = tournament.prediction_count or 5
+    if not tournament.participants or len(tournament.participants) < prediction_count:
+        await callback.answer(f"Недостаточно участников в турнире ({len(tournament.participants)}) для ввода результатов (требуется {prediction_count}).", show_alert=True)
         return
+        
     await state.set_state(SetResults.entering_results)
     await state.update_data(
         managed_tournament_id=tournament_id,
         tournament_players={p.id: p.full_name for p in tournament.participants},
-        results_list=[]
+        results_list=[],
+        prediction_count=prediction_count
     )
     kb = get_paginated_players_kb(players=tournament.participants, action="set_result", tournament_id=tournament_id, show_back_to_menu=True)
-    await callback.message.edit_text("<b>Ввод результатов. Шаг 1/5:</b> Выберите <b>1 место</b>:", reply_markup=kb)
+    await callback.message.edit_text(f"<b>Ввод результатов. Шаг 1/{prediction_count}:</b> Выберите <b>1 место</b>:", reply_markup=kb)
     await callback.answer()
 
 @router.callback_query(SetResults.entering_results, F.data.startswith("set_result:"))
 async def cq_process_result_selection(callback: types.CallbackQuery, state: FSMContext):
     player_id = int(callback.data.split(":")[1])
     data = await state.get_data()
-    players_dict = data.get("tournament_players", {})
     results_list = data.get("results_list", [])
+    prediction_count = data.get("prediction_count", 5)
+    
     if player_id in results_list:
         await callback.answer("Этот игрок уже в списке результатов!", show_alert=True)
         return
     results_list.append(player_id)
     await state.update_data(results_list=results_list)
+    
     next_place = len(results_list) + 1
-    if next_place <= 5:
-        player_objects = [Player(id=pid, full_name=name) for pid, name in players_dict.items()]
-        kb = get_paginated_players_kb(players=player_objects, action="set_result", selected_ids=results_list, tournament_id=data.get("managed_tournament_id"), show_back_to_menu=True)
-        await callback.message.edit_text(f"<b>Шаг {next_place}/5:</b> Выберите <b>{next_place} место</b>:", reply_markup=kb)
+    if next_place <= prediction_count:
+        async with async_session() as session:
+             tournament = await session.get(Tournament, data.get("managed_tournament_id"), options=[selectinload(Tournament.participants)])
+             players = tournament.participants
+
+        kb = get_paginated_players_kb(players=players, action="set_result", selected_ids=results_list, tournament_id=data.get("managed_tournament_id"), show_back_to_menu=True)
+        await callback.message.edit_text(f"<b>Шаг {next_place}/{prediction_count}:</b> Выберите <b>{next_place} место</b>:", reply_markup=kb)
     else:
         await state.set_state(SetResults.confirming_results)
-        final_results_text = "<b>Итоговый список для подтверждения:</b>\n" + "\n".join(f"{i+1}. {players_dict.get(pid, 'Неизвестный')}" for i, pid in enumerate(results_list))
+        async with async_session() as session:
+             players = await session.execute(select(Player).where(Player.id.in_(results_list)))
+             players_map = {p.id: p.full_name for p in players.scalars()}
+             
+        final_results_text = "<b>Итоговый список для подтверждения:</b>\n" + "\n".join(f"{i+1}. {players_map.get(pid, 'Неизвестный')}" for i, pid in enumerate(results_list))
         await callback.message.edit_text(final_results_text, reply_markup=confirmation_kb(action_prefix="confirm_results"))
     await callback.answer()
 
@@ -715,17 +783,22 @@ async def cq_set_results_confirm(callback: types.CallbackQuery, state: FSMContex
                 forecast.points_earned = points
                 user = forecast.user
                 
-                user_forecasts_count_res = await session.execute(
-                    select(func.count(Forecast.id)).where(Forecast.user_id == user.id)
-                )
-                user_forecasts_count = user_forecasts_count_res.scalar_one()
-
+                # New logic: using stored total_slots
+                total_slots_before = user.total_slots or 0
+                
+                # If migrating from old system where total_slots was 0 but forecasts existed:
+                # We can't easily fix it here without re-scanning all history.
+                # Assuming migration script or fresh start handled it or we accept slight inaccuracy for old users.
+                
                 new_total, new_acc, new_mae = calculate_new_stats(
-                    user.total_points, user.accuracy_rate, user.avg_error, user_forecasts_count, points, diffs, exact_hits
+                    user.total_points, user.accuracy_rate, user.avg_error, 
+                    total_slots_before, 
+                    points, diffs, exact_hits
                 )
                 user.total_points = new_total
                 user.accuracy_rate = new_acc
                 user.avg_error = new_mae
+                user.total_slots = total_slots_before + len(forecast.prediction_data)
 
             await session.commit()
 
@@ -741,12 +814,54 @@ async def cq_set_results_confirm(callback: types.CallbackQuery, state: FSMContex
             # Notify users
             for forecast in tournament.forecasts:
                 try:
-                    prediction_text = f"<b>📜 Ваш прогноз:</b>\n" + format_player_list(forecast.prediction_data, player_name_map)
+                    # Build detailed prediction text with points
+                    prediction_text = f"<b>📜 Ваш прогноз:</b>\n"
+                    
+                    total_points = forecast.points_earned or 0
+                    # Re-calculate breakdown for display (or we could store it, but calc is cheap)
+                    # We need the diffs/hits logic here locally or helper
+                    
+                    for i, pid in enumerate(forecast.prediction_data):
+                        predicted_rank = i + 1
+                        p_name = player_name_map.get(pid, "Неизвестный")
+                        
+                        line_points = 0
+                        extra_info = ""
+                        
+                        if pid in results_dict:
+                            actual_rank = results_dict[pid]
+                            diff = abs(predicted_rank - actual_rank)
+                            
+                            if diff == 0:
+                                line_points = 5
+                                extra_info = " (🎯 Точно!)"
+                            else:
+                                line_points = 1
+                                extra_info = f" (факт: {actual_rank})"
+                        else:
+                             line_points = 0
+                             extra_info = " (не в топе)"
+                        
+                        prediction_text += f"{i+1}. {p_name}{extra_info} — <b>+{line_points}</b>\n"
+
+                    # Add logic to show Bonus if perfect
+                    # Re-calculate if bonus applies? Or just check total_points
+                    # Simple check: if total_points == (count * 5) + 15, then bonus applied.
+                    # Or better: check diffs here locally.
+                    
+                    current_hits = 0
+                    for i, pid in enumerate(forecast.prediction_data):
+                         if pid in results_dict and results_dict[pid] == i + 1:
+                             current_hits += 1
+                    
+                    if current_hits == len(forecast.prediction_data) and len(forecast.prediction_data) > 0:
+                        prediction_text += "\n🎉 <b>БОНУС: +15 очков за идеальный прогноз!</b>\n"
+
                     user_message = (
                         f"<b>Итоги турнира «{tournament.name}» от {tournament.date.strftime('%d.%m.%Y')}</b>\n\n"
                         f"{results_text}\n"
                         f"{prediction_text}\n"
-                        f"<b>💰 Очки за прогноз: {forecast.points_earned or 0}</b>"
+                        f"<b>💰 Итого очков: {total_points}</b>"
                     )
                     await callback.bot.send_message(forecast.user_id, user_message)
                     await asyncio.sleep(0.2)
