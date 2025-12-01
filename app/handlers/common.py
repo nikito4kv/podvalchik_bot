@@ -126,7 +126,7 @@ async def handle_leaderboard(message: types.Message):
     
     # Add headers
     # Compact header for mobile: # Name Pts Gms Dia
-    leaderboard_text += " #    Игрок     Очки Игр 💎\n"
+    leaderboard_text += " #     Игрок      Очки Игр 💎\n"
     
     for i, user in enumerate(top_users, 1):
         place_num = i
