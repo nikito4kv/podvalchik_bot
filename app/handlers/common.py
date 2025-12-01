@@ -125,8 +125,8 @@ async def handle_leaderboard(message: types.Message):
     leaderboard_text = "<b>🏆 Топ-10 прогнозистов клуба:</b>\n\n<code>"
     
     # Add headers
-    leaderboard_text += "#  Ранг Имя             Очки  Игры Ср. Идеал \n" # Added 'Игры' header
-    leaderboard_text += "----------------------------------------------\n" # Adjusted separator length
+    # Compact header for mobile: # Name Pts Gms Dia
+    leaderboard_text += " #    Игрок     Очки Игр 💎\n"
     
     for i, user in enumerate(top_users, 1):
         place_num = i
@@ -134,20 +134,21 @@ async def handle_leaderboard(message: types.Message):
         rank_icon = get_user_rank(user.total_points).split()[0]
         
         t_played = user.tournaments_played or 0
-        avg = round(user.total_points / t_played, 1) if t_played > 0 else 0.0
         
-        diamonds_str = f"💎{user.perfect_tournaments}"
+        # Only show diamonds count if > 0
+        diamonds_str = f"{user.perfect_tournaments}" if user.perfect_tournaments and user.perfect_tournaments > 0 else ""
         
         display_username = username
-        if len(display_username) > 15:
-            display_username = display_username[:12] + "..."
+        # Truncate name to 10 chars for mobile optimization
+        if len(display_username) > 10:
+            display_username = display_username[:9] + "…"
         
         line = (
-            f"{place_num:>2}. {rank_icon} "
-            f"{display_username:<15}"
-            f"{user.total_points:>6} "
-            f"{t_played:>4} " # Display tournaments played
-            f"{avg:>5.1f} "
+            f"{place_num:>2}. "
+            f"{rank_icon} "
+            f"{display_username:<10} "
+            f"{user.total_points:>4} "
+            f"{t_played:>3} "
             f"{diamonds_str}"
         )
         leaderboard_text += f"{line}\n"
