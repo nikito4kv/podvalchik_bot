@@ -6,6 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from app.config import BOT_TOKEN
 from app.db.session import init_db
 from app.handlers import common, admin, prediction, tournament_management, pagination, player_management
+from app.middlewares.auth import AuthMiddleware
 
 # Включаем логирование, чтобы видеть информацию о работе бота
 logging.basicConfig(level=logging.INFO)
@@ -17,6 +18,10 @@ async def main():
     # Инициализация бота и диспетчера
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
+
+    # Middleware
+    dp.message.middleware(AuthMiddleware())
+    dp.callback_query.middleware(AuthMiddleware())
 
     # Регистрируем роутеры
     dp.include_router(admin.router)

@@ -6,26 +6,37 @@ import math
 from app.db.models import Tournament, Player, Forecast, TournamentStatus
 
 
-def tournament_selection_kb(tournaments: List[Tournament]) -> InlineKeyboardMarkup:
+def tournament_selection_kb(tournaments: List[Tournament], predicted_ids: List[int]) -> InlineKeyboardMarkup:
     """Creates a keyboard for selecting a tournament."""
     builder = InlineKeyboardBuilder()
     for tournament in tournaments:
+        mark = "✅" if tournament.id in predicted_ids else "⬜️"
         builder.button(
-            text=f"«{tournament.name}» ({tournament.date.strftime('%d.%m.%Y')})",
+            text=f"{mark} «{tournament.name}» ({tournament.date.strftime('%d.%m.%Y')})",
             callback_data=f"select_tournament_{tournament.id}",
         )
     builder.adjust(1)
     return builder.as_markup()
 
 
-def tournament_user_menu_kb(tournament_id: int, tournament_status: TournamentStatus, is_admin: bool) -> InlineKeyboardMarkup:
+def tournament_user_menu_kb(tournament_id: int, tournament_status: TournamentStatus, is_admin: bool, user_has_forecast: bool = False) -> InlineKeyboardMarkup:
     """Creates a user menu for a selected tournament."""
+    print(f"DEBUG KB: id={tournament_id}, status={tournament_status}, is_admin={is_admin}, has_forecast={user_has_forecast}")
     builder = InlineKeyboardBuilder()
-    builder.button(text="🔮 Сделать прогноз", callback_data=f"predict_start_{tournament_id}")
+    
+    if user_has_forecast:
+        builder.button(text="👀 Мой прогноз", callback_data=f"view_forecast:{tournament_id}")
+    else:
+        builder.button(text="🔮 Сделать прогноз", callback_data=f"predict_start_{tournament_id}")
+        
     builder.button(text="👥 Список участников", callback_data=f"view_participants_{tournament_id}")
     
+    # Safe check handles both Enum object and string "OPEN"
+    # SQLAlchemy with SQLite sometimes returns strings for Enums
+    status_str = tournament_status.name if hasattr(tournament_status, "name") else str(tournament_status)
+    
     # Show "View Other Forecasts" only if LIVE/FINISHED or if admin
-    if tournament_status != TournamentStatus.OPEN or is_admin:
+    if status_str != "OPEN" or is_admin:
         builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:menu")
         
     builder.button(text="◀️ Назад", callback_data="predict_back_to_list")
@@ -72,8 +83,8 @@ def get_paginated_players_kb(
     page_players = available_players[start_index:end_index]
 
     for player in page_players:
-        rating_str = f" ({player.current_rating})" if player.current_rating is not None else ""
-        builder.button(text=f"{player.full_name}{rating_str}", callback_data=f"{action}:{player.id}")
+        rating_str = f"[{player.current_rating}] " if player.current_rating is not None else ""
+        builder.button(text=f"{rating_str}{player.full_name}", callback_data=f"{action}:{player.id}")
     builder.adjust(2)
 
     nav_buttons = []
@@ -104,9 +115,13 @@ def get_paginated_players_kb(
         )
 
     if show_back_to_menu and tournament_id:
+        back_cb = f"manage_tournament_{tournament_id}" # Default admin
+        if action == "predict":
+            back_cb = f"select_tournament_{tournament_id}" # User predict menu
+            
         builder.row(
             InlineKeyboardButton(
-                text="◀️ Назад в меню", callback_data=f"manage_tournament_{tournament_id}"
+                text="◀️ Назад", callback_data=back_cb
             )
         )
 
@@ -146,7 +161,10 @@ def view_forecast_kb(
     back_callback: str, 
     forecast_id: int | None = None,
     tournament_id: int | None = None,
-    allow_edit: bool = False
+    allow_edit: bool = False,
+    show_others: bool = False, # This will be the direct control flag
+    is_admin: bool = False, # Needed for consistency with tournament_user_menu_kb
+    tournament_status: Optional[TournamentStatus] = None # Needed for consistency with tournament_user_menu_kb
 ) -> InlineKeyboardMarkup:
     """Creates a keyboard with a dynamic back button and an optional edit button."""
     builder = InlineKeyboardBuilder()
@@ -169,7 +187,15 @@ def view_forecast_kb(
                  except:
                      pass
         
-        builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:{source}")
+        # Determine if "View Other Forecasts" should be shown
+        _show_others = show_others # Use the direct flag if provided
+        if tournament_status is not None:
+            status_str = tournament_status.name if hasattr(tournament_status, "name") else str(tournament_status)
+            _show_others = (status_str != "OPEN") or is_admin # Re-evaluate based on status/admin
+        
+        if _show_others:
+            builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:{source}")
+            
         builder.button(text="👥 Состав турнира", callback_data=f"vof_participants:{tournament_id}:{source}")
 
     builder.button(text="◀️ Назад к списку", callback_data=back_callback)
@@ -297,33 +323,47 @@ def enter_rating_fsm_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def new_player_rating_kb() -> InlineKeyboardMarkup:
+    """Keyboard for new player rating input (Skip option)."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➡️ Пропустить (без рейтинга)", callback_data="new_rating:skip")
+    # No cancel here? Or maybe Cancel adding?
+    # If we cancel, we have created a player but not added to tournament. Ideally we should delete him or just ignore.
+    # Let's just allow skip.
+    return builder.as_markup()
+
+
 def get_paginated_players_management_kb(
     players: List[Player],
+    view_mode: str = "active", # 'active' or 'archived'
     page: int = 0,
     page_size: int = 8,
 ) -> InlineKeyboardMarkup:
     """
-    Creates a paginated keyboard for player management.
+    Creates a paginated keyboard for player management, filtering by view_mode.
     """
-    # Sorting: Active first, then Alphabetical
-    available_players = sorted(
-        players, key=lambda p: (not (p.is_active if p.is_active is not None else True), p.full_name)
-    )
+    # Filter based on view_mode
+    if view_mode == "active":
+        filtered_players = [p for p in players if (p.is_active if p.is_active is not None else True)]
+    else:
+        filtered_players = [p for p in players if not (p.is_active if p.is_active is not None else True)]
+
+    # Sorting: Alphabetical
+    sorted_players = sorted(filtered_players, key=lambda p: p.full_name)
 
     builder = InlineKeyboardBuilder()
-    total_players = len(available_players)
+    total_players = len(sorted_players)
     total_pages = max(1, math.ceil(total_players / page_size))
     page = max(0, min(page, total_pages - 1))
 
     start_index = page * page_size
     end_index = start_index + page_size
-    page_players = available_players[start_index:end_index]
+    page_players = sorted_players[start_index:end_index]
 
     for player in page_players:
-        is_active = player.is_active if player.is_active is not None else True
-        status_icon = "" if is_active else "❌ "
+        rating_str = f"[{player.current_rating}] " if player.current_rating is not None else ""
         builder.button(
-            text=f"{status_icon}{player.full_name}", 
+            text=f"{rating_str}{player.full_name}", 
             callback_data=f"pm_select:{player.id}"
         )
     builder.adjust(2)
@@ -333,7 +373,7 @@ def get_paginated_players_management_kb(
         if page > 0:
             nav_buttons.append(
                 InlineKeyboardButton(
-                    text="◀️", callback_data=f"pm_paginate:{page-1}"
+                    text="◀️", callback_data=f"pm_paginate:{view_mode}:{page-1}"
                 )
             )
         nav_buttons.append(
@@ -342,11 +382,17 @@ def get_paginated_players_management_kb(
         if page < total_pages - 1:
             nav_buttons.append(
                 InlineKeyboardButton(
-                    text="▶️", callback_data=f"pm_paginate:{page+1}"
+                    text="▶️", callback_data=f"pm_paginate:{view_mode}:{page+1}"
                 )
             )
     if nav_buttons:
         builder.row(*nav_buttons)
+
+    # Switch mode button
+    if view_mode == "active":
+        builder.row(InlineKeyboardButton(text="📂 Показать архив", callback_data="pm_switch:archived"))
+    else:
+        builder.row(InlineKeyboardButton(text="📂 Показать активных", callback_data="pm_switch:active"))
 
     builder.row(
         InlineKeyboardButton(text="➕ Добавить игрока", callback_data="pm_add_new")
@@ -394,6 +440,8 @@ def view_others_forecasts_menu_kb(tournament_id: int, source: str) -> InlineKeyb
         builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
     elif source == "active":
         builder.button(text="◀️ Назад", callback_data=f"view_forecast:{tournament_id}")
+    elif source == "tm_menu":
+        builder.button(text="◀️ Назад", callback_data=f"manage_tournament_{tournament_id}")
     elif source.startswith("hist_"):
         # hist_FID_PAGE
         try:
@@ -477,6 +525,8 @@ def view_participants_back_kb(tournament_id: int, source: str) -> InlineKeyboard
         builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
     elif source == "active":
         builder.button(text="◀️ Назад", callback_data=f"view_forecast:{tournament_id}")
+    elif source == "tm_menu":
+        builder.button(text="◀️ Назад", callback_data=f"manage_tournament_{tournament_id}")
     elif source.startswith("hist_"):
         try:
             parts = source.split("_")
@@ -488,4 +538,44 @@ def view_participants_back_kb(tournament_id: int, source: str) -> InlineKeyboard
     else:
         builder.button(text="◀️ Назад", callback_data=f"select_tournament_{tournament_id}")
         
+    return builder.as_markup()
+
+
+def help_menu_kb() -> InlineKeyboardMarkup:
+    """Keyboard for the help menu."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📈 Как считаются очки?", callback_data="help:scoring")
+    builder.button(text="🏅 Ранги и Достижения", callback_data="help:ranks")
+    builder.button(text="📝 Как сделать прогноз", callback_data="help:how_to")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def help_back_kb() -> InlineKeyboardMarkup:
+    """Back button for help sections."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад", callback_data="help:main")
+    return builder.as_markup()
+
+def add_player_success_kb(tournament_id: int) -> InlineKeyboardMarkup:
+    """Keyboard shown after successfully adding a player to a tournament."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Добавить еще игрока", callback_data=f"tm_add_participant_start_{tournament_id}")
+    builder.button(text="◀️ Назад в меню", callback_data=f"manage_tournament_{tournament_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def add_global_player_success_kb() -> InlineKeyboardMarkup:
+    """Keyboard shown after successfully adding a player to the global database."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Добавить еще игрока", callback_data="pm_add_new")
+    builder.button(text="◀️ Назад к списку", callback_data="pm_back_list")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def tournament_start_kb(tournament_id: int) -> InlineKeyboardMarkup:
+    """Keyboard for a new forecast start (no forecast yet)."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔮 Сделать прогноз", callback_data=f"predict_start_{tournament_id}")
+    builder.button(text="◀️ Назад", callback_data="predict_back_to_list")
+    builder.adjust(1)
     return builder.as_markup()

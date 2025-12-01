@@ -31,3 +31,11 @@ def draw_progress_bar(percent: int, length: int = 8) -> str:
     filled_len = int(length * percent / 100)
     bar = "■" * filled_len + "□" * (length - filled_len)
     return f"<code>[{bar}]</code>"
+
+def get_user_rank(points: int) -> str:
+    """Returns the user's rank title based on points."""
+    if points < 50: return "👶 Новичок"
+    if points < 200: return "🧢 Любитель"
+    if points < 500: return "🎱 Профи"
+    if points < 1000: return "🧠 Эксперт"
+    return "🔮 Оракул"

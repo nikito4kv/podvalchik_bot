@@ -2,14 +2,16 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select, and_, delete
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select
 
-from app.db.models import Tournament, TournamentStatus, Player, Forecast, User
+from app.db import crud
+from app.db.models import Tournament, TournamentStatus, Player, Forecast
 from app.db.session import async_session
 from app.states.user_states import MakeForecast
 from app.config import ADMIN_IDS
 from app.utils.formatting import draw_progress_bar
+from app.lexicon.ru import LEXICON_RU
+from app.handlers.view_helpers import show_forecast_card
 from app.keyboards.inline import (
     get_paginated_players_kb, 
     confirmation_kb, 
@@ -19,87 +21,111 @@ from app.keyboards.inline import (
     get_paginated_forecasts_list_kb,
     view_single_forecast_back_kb,
     view_participants_back_kb,
-    view_forecast_kb
+    view_forecast_kb,
+    tournament_start_kb
 )
 
 router = Router()
 
 async def get_open_tournaments(user_id: int):
-    """Helper to get tournaments a user has NOT predicted on yet."""
+    """Helper to get ALL open tournaments and the user's predicted IDs."""
     async with async_session() as session:
         # Get IDs of tournaments the user has already made a forecast for
-        user_forecasts_res = await session.execute(
-            select(Forecast.tournament_id).where(Forecast.user_id == user_id)
-        )
-        predicted_tournament_ids = user_forecasts_res.scalars().all()
+        predicted_tournament_ids = await crud.get_user_forecast_tournament_ids(session, user_id)
 
         # Get all OPEN tournaments
-        open_tournaments_res = await session.execute(
-            select(Tournament).where(Tournament.status == TournamentStatus.OPEN).order_by(Tournament.date.desc())
-        )
-        # Filter out the ones the user has already predicted on
-        available_tournaments = [
-            t for t in open_tournaments_res.scalars().all() if t.id not in predicted_tournament_ids
-        ]
-        return available_tournaments
+        open_tournaments = await crud.get_open_tournaments(session)
+        
+        return open_tournaments, predicted_tournament_ids
 
 @router.message(F.text == "🏁 Актуальные турниры")
 @router.message(Command("predict"))
 async def cmd_predict_start(message: types.Message | types.CallbackQuery, state: FSMContext):
     """Starts the forecast creation process."""
     user_id = message.from_user.id
-    available_tournaments = await get_open_tournaments(user_id)
+    available_tournaments, predicted_ids = await get_open_tournaments(user_id)
 
     if not available_tournaments:
-        text = "Сейчас нет турниров, открытых для прогнозов, или вы уже сделали прогноз на все доступные. Загляните позже!"
-        if isinstance(message, types.Message):
-            await message.answer(text)
-        else:
-            await message.message.edit_text(text)
-        return
+         text = LEXICON_RU["no_open_tournaments"]
+         if isinstance(message, types.Message):
+             await message.answer(text)
+         else:
+             await message.message.edit_text(text)
+         return
 
     await state.set_state(MakeForecast.choosing_tournament)
     
-    text = "Выберите турнир для создания прогноза:"
+    text = "Выберите турнир (✅ - прогноз сделан):"
     if isinstance(message, types.Message):
-        await message.answer(text, reply_markup=tournament_selection_kb(available_tournaments))
+        await message.answer(text, reply_markup=tournament_selection_kb(available_tournaments, predicted_ids))
     else:
-        await message.message.edit_text(text, reply_markup=tournament_selection_kb(available_tournaments))
+        await message.message.edit_text(text, reply_markup=tournament_selection_kb(available_tournaments, predicted_ids))
 
 @router.callback_query(F.data == "predict_back_to_list")
 async def cq_predict_back_to_list(callback: types.CallbackQuery, state: FSMContext):
     await cmd_predict_start(callback, state)
     await callback.answer()
 
+async def show_tournament_menu_logic(callback: types.CallbackQuery, state: FSMContext, tournament_id: int):
+    """Helper to show tournament menu, shared by multiple handlers."""
+    async with async_session() as session:
+        tournament = await crud.get_tournament(session, tournament_id)
+        if not tournament:
+            await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True)
+            await cmd_predict_start(callback, state)
+            return
+
+        # Check if user has forecast for this tournament
+        forecast_stmt = select(Forecast).where(Forecast.user_id == callback.from_user.id, Forecast.tournament_id == tournament_id)
+        forecast_res = await session.execute(forecast_stmt)
+        forecast = forecast_res.scalar_one_or_none()
+
+        if forecast:
+            # SHOW FORECAST CARD DIRECTLY
+            await show_forecast_card(callback, tournament, forecast, session)
+        else:
+            # SHOW PARTICIPANTS LIST + MAKE FORECAST BUTTON
+            # Need to fetch participants. Since tournament object is already in session, 
+            # we use refresh to load the relationship explicitly.
+            await session.refresh(tournament, ["participants"])
+            
+            text = LEXICON_RU["participants_title"].format(name=tournament.name)
+            if not tournament.participants:
+                text += LEXICON_RU["no_participants"]
+            else:
+                sorted_participants = sorted(
+                    tournament.participants, 
+                    key=lambda p: (-(p.current_rating or 0), p.full_name)
+                )
+                lines = []
+                for p in sorted_participants:
+                    rating_str = f"[{p.current_rating}] " if p.current_rating is not None else ""
+                    lines.append(f"• {rating_str}{p.full_name}")
+                text += "\n".join(lines)
+            
+            try:
+                await callback.message.edit_text(text, reply_markup=tournament_start_kb(tournament_id))
+            except Exception:
+                await callback.message.answer(text, reply_markup=tournament_start_kb(tournament_id))
+
 @router.callback_query(F.data.startswith("select_tournament_"))
 async def cq_show_tournament_menu(callback: types.CallbackQuery, state: FSMContext):
     """Handles tournament selection and shows the user menu for that tournament."""
     tournament_id = int(callback.data.split("_")[2])
-    
-    async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id)
-        if not tournament:
-            await callback.answer("Турнир не найден.", show_alert=True)
-            await cmd_predict_start(callback, state)
-            return
-
-    # Determine if current user is admin
-    is_admin = callback.from_user.id in ADMIN_IDS
-    text = f"<b>Турнир: «{tournament.name}»</b>\nДата: {tournament.date.strftime('%d.%m.%Y')}\n\nВыберите действие:"
-    await callback.message.edit_text(text, reply_markup=tournament_user_menu_kb(tournament_id, tournament.status, is_admin)) 
+    await show_tournament_menu_logic(callback, state, tournament_id)
     await callback.answer()
 
-@router.callback_query(MakeForecast.choosing_tournament, F.data.startswith("view_participants_"))
+@router.callback_query(F.data.startswith("view_participants_"))
 async def cq_view_participants(callback: types.CallbackQuery, state: FSMContext):
     """Shows the list of participants for the selected tournament."""
     tournament_id = int(callback.data.split("_")[2])
     
     async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+        tournament = await crud.get_tournament_with_participants(session, tournament_id)
         
-        text = f"<b>Участники турнира «{tournament.name}»</b>\n\n"
+        text = LEXICON_RU["participants_title"].format(name=tournament.name)
         if not tournament.participants:
-            text += "В этом турнире пока нет зарегистрированных участников."
+            text += LEXICON_RU["no_participants"]
         else:
             # Sort by rating (desc) then name
             sorted_participants = sorted(
@@ -113,22 +139,34 @@ async def cq_view_participants(callback: types.CallbackQuery, state: FSMContext)
             text += "\n".join(lines)
     
     builder = InlineKeyboardBuilder()
-    builder.button(text="◀️ Назад к меню турнира", callback_data=f"select_tournament_{tournament_id}")
+    builder.button(text=LEXICON_RU["back_button"], callback_data=f"select_tournament_{tournament_id}")
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
 
-@router.callback_query(MakeForecast.choosing_tournament, F.data.startswith("predict_start_"))
+@router.callback_query(F.data.startswith("predict_start_"))
 async def cq_predict_start(callback: types.CallbackQuery, state: FSMContext):
     """Starts the actual prediction flow (picking players)."""
     tournament_id = int(callback.data.split("_")[2])
     
     async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+        # Double check if user already has a forecast (in case of race condition or old button)
+        forecast_res = await session.execute(select(Forecast).where(Forecast.user_id == callback.from_user.id, Forecast.tournament_id == tournament_id))
+        if forecast_res.scalar_one_or_none():
+             # Redirect to view/edit forecast
+             # We can trigger the view_forecast handler logic here, or just send a message
+             # Let's show a simple alert and refresh the menu to "My Forecast" state
+             await callback.answer("У вас уже есть прогноз на этот турнир!", show_alert=True)
+             # Refresh the menu (will show 'View Forecast' button now)
+             await show_tournament_menu_logic(callback, state, tournament_id)
+             return
+
+        tournament = await crud.get_tournament_with_participants(session, tournament_id)
         if not tournament or not tournament.participants:
-            await callback.answer("В этом турнире пока нет участников. Прогноз невозможен.", show_alert=True)
+            await callback.answer(LEXICON_RU["no_participants_forecast_impossible"], show_alert=True)
             return
         
         players = tournament.participants
+        prediction_count = tournament.prediction_count or 5
 
     await state.set_state(MakeForecast.making_prediction)
     await state.update_data(
@@ -137,53 +175,93 @@ async def cq_predict_start(callback: types.CallbackQuery, state: FSMContext):
             p.id: f"{p.full_name} ({p.current_rating})" if p.current_rating is not None else p.full_name 
             for p in players
         },
-        forecast_list=[]
+        forecast_list=[],
+        prediction_count=prediction_count
     )
     
     kb = get_paginated_players_kb(
         players=players,
-        action="predict"
+        action="predict",
+        tournament_id=tournament_id,
+        show_back_to_menu=True
     )
     await callback.message.edit_text(
-        "<b>Шаг 1/5:</b> Выберите, кто, по-вашему, займет <b>1 место</b>:",
+        LEXICON_RU["step_1"].replace("5", str(prediction_count)), # Quick fix for text
         reply_markup=kb
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("edit_confirm:"))
-async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSMContext):
-    """Handles the 'Yes' confirmation to edit a forecast and starts the process."""
+async def cq_edit_forecast_decision(callback: types.CallbackQuery, state: FSMContext):
+    """Handles the confirmation to edit a forecast (Yes/No)."""
     parts = callback.data.split(":")
-    if len(parts) < 3 or parts[2] != "yes":
-        try:
-            await callback.message.delete()
-            await callback.answer("Редактирование отменено.")
-        except (ValueError, IndexError):
-            await callback.answer("Ошибка отмены.", show_alert=True)
+    # format: edit_confirm:FORECAST_ID:yes/no
+    if len(parts) < 3:
+        await callback.answer("Ошибка данных.", show_alert=True)
         return
-
+        
+    action = parts[2]
     forecast_id = int(parts[1])
 
+    if action == "no":
+        # User cancelled editing. Return to view forecast.
+        # We need to find tournament_id to redirect back to 'view_forecast' logic
+        async with async_session() as session:
+            forecast = await crud.get_forecast_details(session, forecast_id)
+            if forecast:
+                # Manually call the view forecast logic (from common.py, but we can't import handler easily)
+                # Or simpler: modify callback data and let router handle it? No, can't modify incoming object easily.
+                # We can send a new message or just edit this one.
+                # But logic is complex (medals, etc).
+                
+                # Best way: Import show_specific_forecast from common if possible? No circular dep.
+                # Or duplicate logic? Ugly.
+                # Or use a shared helper?
+                
+                # Let's cheat: The user was at 'view_forecast:TOURNAMENT_ID'.
+                # We can just delete this message and say "Cancelled", user sees previous menu?
+                # No, the previous menu WAS this message (it was edited).
+                
+                # We need to re-render 'view_forecast'.
+                # Since 'show_specific_forecast' is in 'common.py' and 'prediction.py' imports 'common' router... no.
+                # Let's move 'show_specific_forecast' logic to a shared helper in 'utils' or just duplicate the simple render here for now.
+                # Actually, we can just call `show_tournament_menu_logic` which shows 'My Forecast' button. 
+                # User clicks 'My Forecast' -> sees forecast. One extra click but safe.
+                
+                # Better: Let's try to invoke the handler by constructing a fake object? No.
+                
+                # Let's just go back to the tournament menu.
+                await callback.answer(LEXICON_RU["edit_cancelled"])
+                await show_tournament_menu_logic(callback, state, forecast.tournament_id)
+                return
+            else:
+                await callback.answer(LEXICON_RU["forecast_error"], show_alert=True)
+                return
+
+    # Action == "yes" -> Continue to editing logic
+    await cq_edit_forecast_confirm_yes_logic(callback, state, forecast_id)
+
+
+async def cq_edit_forecast_confirm_yes_logic(callback: types.CallbackQuery, state: FSMContext, forecast_id: int):
+    """Logic for starting edit when confirmed."""
     async with async_session() as session:
-        forecast = await session.get(
-            Forecast,
-            forecast_id,
-            options=[selectinload(Forecast.tournament).selectinload(Tournament.participants)],
-        )
+        forecast = await crud.get_forecast_for_editing(session, forecast_id)
         if not forecast or not forecast.tournament:
-            await callback.answer("Турнир для этого прогноза не найден.", show_alert=True)
+            await callback.answer(LEXICON_RU["tournament_not_found_for_forecast"], show_alert=True)
             return
         
         tournament = forecast.tournament
         if tournament.status != TournamentStatus.OPEN:
-            await callback.answer("⚠️ Редактирование запрещено! Турнир уже начался или завершен.", show_alert=True)
+            await callback.answer(LEXICON_RU["edit_forbidden"], show_alert=True)
             return
 
         if not tournament.participants:
-            await callback.message.edit_text("В этом турнире пока нет зарегистрированных участников. Прогноз невозможен.")
+            await callback.message.edit_text(LEXICON_RU["no_participants_forecast_impossible"])
             await state.clear()
             return
+        
+        prediction_count = tournament.prediction_count or 5
 
     await state.set_state(MakeForecast.making_prediction)
     await state.update_data(
@@ -194,11 +272,12 @@ async def cq_edit_forecast_confirm_yes(callback: types.CallbackQuery, state: FSM
         },
         forecast_list=[],
         editing_forecast_id=forecast_id,
+        prediction_count=prediction_count
     )
 
     kb = get_paginated_players_kb(players=tournament.participants, action="predict")
     await callback.message.edit_text(
-        "<b>Шаг 1/5:</b> Выберите, кто, по-вашему, займет <b>1 место</b>:",
+        LEXICON_RU["step_1"].replace("5", str(prediction_count)),
         reply_markup=kb,
     )
     await callback.answer()
@@ -211,9 +290,10 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
     data = await state.get_data()
     players_dict = data.get("tournament_players", {})
     forecast_list = data.get("forecast_list", [])
+    prediction_count = data.get("prediction_count", 5)
 
     if player_id in forecast_list:
-        await callback.answer("Этот игрок уже в вашем прогнозе!", show_alert=True)
+        await callback.answer(LEXICON_RU["player_already_selected"], show_alert=True)
         return
 
     forecast_list.append(player_id)
@@ -221,30 +301,32 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
     
     next_place = len(forecast_list) + 1
 
-    if next_place <= 5:
+    if next_place <= prediction_count:
         # Ask for the next place
         # Fetch players with ratings from DB for correct sorting
         tournament_id = data.get("tournament_id")
         async with async_session() as session:
-             tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+             tournament = await crud.get_tournament_with_participants(session, tournament_id)
              players = tournament.participants
 
         kb = get_paginated_players_kb(
             players=players,
             action="predict",
-            selected_ids=forecast_list
+            selected_ids=forecast_list,
+            tournament_id=tournament_id,
+            show_back_to_menu=True
         )
         await callback.message.edit_text(
-            f"<b>Шаг {next_place}/5:</b> Выберите, кто займет <b>{next_place} место</b>:",
+            LEXICON_RU["step_n"].format(next_place=next_place).replace("5", str(prediction_count)),
             reply_markup=kb
         )
     else:
         await state.set_state(MakeForecast.confirming_forecast)
         
-        final_forecast_text = "<b>Ваш итоговый прогноз:</b>\n"
+        final_forecast_text = LEXICON_RU["final_forecast_header"]
         for i, pid in enumerate(forecast_list):
-            final_forecast_text += f"{i+1}. {players_dict.get(pid, 'Неизвестный')}\n"
-        final_forecast_text += "\nПодтверждаете свой выбор?"
+            final_forecast_text += f"{i+1}. {players_dict.get(pid, LEXICON_RU['unknown_player'])}\n"
+        final_forecast_text += LEXICON_RU["confirm_choice"]
 
         await callback.message.edit_text(
             final_forecast_text,
@@ -259,7 +341,7 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
     
     if not all(k in data for k in ["tournament_id", "forecast_list"]):
         await callback.message.edit_text(
-            "Произошла ошибка, не вся информация для прогноза найдена. Попробуйте снова."
+            LEXICON_RU["forecast_error"]
         )
         await state.clear()
         return
@@ -277,25 +359,33 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
 
     async with async_session() as session:
         if editing_forecast_id:
-            await session.execute(
-                delete(Forecast).where(Forecast.id == editing_forecast_id)
-            )
+            await crud.delete_forecast(session, editing_forecast_id)
         
-        session.add(new_forecast)
+        await crud.create_forecast(session, new_forecast)
         await session.commit()
         await session.refresh(new_forecast) # Get ID
         
         # Construct success message
-        text_header = "✅ Ваш прогноз обновлен!" if editing_forecast_id else "✅ Ваш прогноз принят!"
-        text_body = "\n\n<b>Ваш выбор:</b>\n"
+        text_header = LEXICON_RU["forecast_updated"] if editing_forecast_id else LEXICON_RU["forecast_accepted"]
+        text_body = LEXICON_RU["your_choice"]
         
         medals = {0: "🥇", 1: "🥈", 2: "🥉"}
         for i, pid in enumerate(forecast_list):
             place = medals.get(i, f" {i+1}.")
-            player_name = players_dict.get(pid, "Неизвестный")
+            player_name = players_dict.get(pid, LEXICON_RU["unknown_player"])
             text_body += f"{place} {player_name}\n"
             
         # Show buttons to manage this forecast immediately
+        # User just made a forecast, so status is likely OPEN.
+        # Show others only if admin.
+        is_admin = callback.from_user.id in ADMIN_IDS
+        
+        # We don't have forecast.tournament loaded here easily (forecast object is new)
+        # But we know it's OPEN.
+        # We can pass tournament_status explicitly if we fetch it, or rely on defaults if we pass show_others directly.
+        # Since show_others overrides status logic in KB if status is None? No, KB logic is:
+        # if tournament_status is not None: ... else: _show_others = show_others.
+        # So if we pass show_others=is_admin and tournament_status=None, it works.
         
         await callback.message.edit_text(
             text_header + text_body,
@@ -303,7 +393,9 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
                 back_callback="predict_back_to_list",
                 forecast_id=new_forecast.id,
                 tournament_id=tournament_id,
-                allow_edit=True
+                allow_edit=True,
+                show_others=is_admin,
+                is_admin=is_admin
             )
         )
 
@@ -312,9 +404,15 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(MakeForecast.confirming_forecast, F.data == "confirm_forecast:no")
 async def cq_predict_cancel(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    tournament_id = data.get("tournament_id")
     await state.clear()
-    await callback.message.edit_text("❌ Прогноз отменен.")
-    await callback.answer()
+    await callback.answer(LEXICON_RU["forecast_cancelled"])
+    
+    if tournament_id:
+        await show_tournament_menu_logic(callback, state, tournament_id)
+    else:
+        await cmd_predict_start(callback, state)
 
 
 # --- View Other Forecasts Logic ---
@@ -333,80 +431,73 @@ async def cq_view_other_forecasts(callback: types.CallbackQuery, state: FSMConte
     user_id = callback.from_user.id
     
     async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.forecasts)])
+        tournament = await crud.get_tournament_with_forecasts(session, tournament_id)
         if not tournament:
-            await callback.answer("Турнир не найден.", show_alert=True)
+            await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True)
             return
 
         is_admin = user_id in ADMIN_IDS
         if tournament.status == TournamentStatus.OPEN and not is_admin:
-            await callback.answer("🔒 Прогнозы участников откроются после начала турнира!", show_alert=True)
+            await callback.answer(LEXICON_RU["forecasts_closed"], show_alert=True)
             return
 
         forecasts = tournament.forecasts
         if not forecasts:
-            await callback.answer("Пока нет прогнозов на этот турнир.", show_alert=True)
+            await callback.answer(LEXICON_RU["no_forecasts_yet"], show_alert=True)
             return
 
         total_forecasts = len(forecasts)
         
-        # Stats aggregation
+        # Stats aggregation: Calculate points per player
+        # 1st place pick = 5 pts (potential max without bonus)
+        # Actually, in RTTF: 1 pt for top, 5 for exact.
+        # But here "Popular Top" is about who people PREDICT will win.
+        # We should probably weigh 1st place picks higher than 5th place picks.
+        # Simple weighted sum: 1st place vote = 5 pts, 2nd = 4 pts ... 5th = 1 pt.
+        # This reflects "hype".
+        
         stats = {} 
         all_player_ids = set()
 
         for f in forecasts:
             for rank, player_id in enumerate(f.prediction_data):
-                place = rank + 1
-                points = 6 - place 
+                # Rank 0 (1st place) -> 5 points weight
+                # Rank 4 (5th place) -> 1 point weight
+                # Formula: 6 - (rank + 1) for 5-slot tournament.
+                # For 3-slot: 4 - (rank + 1) ?
+                # Let's make it dynamic based on prediction length? Or fixed?
+                # Fixed 5,4,3,2,1 is good for "popularity".
+                
+                weight = 5 - rank
+                if weight < 1: weight = 1 # Safety
+                
                 all_player_ids.add(player_id)
                 if player_id not in stats:
-                    stats[player_id] = {'points': 0, 1: 0, 2: 0, 3: 0}
-                stats[player_id]['points'] += points
-                if place <= 3:
-                    stats[player_id][place] += 1
+                    stats[player_id] = {'hype_points': 0, 'votes': 0}
+                
+                stats[player_id]['hype_points'] += weight
+                stats[player_id]['votes'] += 1
 
         # Batch fetch names
         player_names_map = {}
         if all_player_ids:
-            players_res = await session.execute(select(Player).where(Player.id.in_(all_player_ids)))
-            for p in players_res.scalars():
+            players = await crud.get_players_by_ids(session, all_player_ids)
+            for p in players:
                 player_names_map[p.id] = p.full_name
 
-        text = f"📊 <b>Аналитика прогнозов «{tournament.name}»</b>\n"
-        text += f"Всего участников: <b>{total_forecasts}</b>\n\n"
+        text = LEXICON_RU["analytics_title"].format(name=tournament.name)
+        text += LEXICON_RU["total_participants"].format(count=total_forecasts)
 
-        text += "🧠 <b>Народный ТОП (мнение большинства):</b>\n"
-        text += "<i>(на основе суммы баллов за места)</i>\n"
+        text += LEXICON_RU["popular_top"]
+        text += "(очки популярности: 1 место=5, 2=4, 3=3...)\n\n"
         
-        sorted_by_points = sorted(stats.items(), key=lambda x: x[1]['points'], reverse=True)[:5]
+        sorted_by_hype = sorted(stats.items(), key=lambda x: x[1]['hype_points'], reverse=True)[:10]
         
-        for i, (pid, data) in enumerate(sorted_by_points):
-            p_name = player_names_map.get(pid, "Неизвестный")
-            text += f"{i+1}. <b>{p_name}</b> — {data['points']} баллов\n"
+        for i, (pid, data) in enumerate(sorted_by_hype):
+            p_name = player_names_map.get(pid, LEXICON_RU["unknown_player"])
+            text += f"{i+1}. <b>{p_name}</b> — {data['hype_points']} (голосов: {data['votes']})\n"
         
-        text += "\n━━━━━━━━━━━━━━━━━━\n"
-
-        medals = {1: "🥇 Золото", 2: "🥈 Серебро", 3: "🥉 Бронза"}
-        
-        for place in range(1, 4):
-            text += f"\n<b>{medals[place]} (Фавориты):</b>\n"
-            candidates = [
-                (pid, data[place]) 
-                for pid, data in stats.items() 
-                if data.get(place, 0) > 0
-            ]
-            sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)[:3] 
-            
-            if not sorted_candidates:
-                text += "• Нет данных\n"
-            
-            for pid, count in sorted_candidates:
-                p_name = player_names_map.get(pid, "Неизвестный")
-                percent = int((count / total_forecasts) * 100)
-                bar = draw_progress_bar(percent, length=6)
-                text += f"• {p_name}\n   {bar} <b>{percent}%</b> ({count} чел.)\n"
-
-        text += "\n👇 Нажмите кнопку ниже, чтобы увидеть прогнозы каждого участника."
+        text += LEXICON_RU["click_below"]
         
         await callback.message.edit_text(text, reply_markup=view_others_forecasts_menu_kb(tournament_id, source))
 
@@ -424,15 +515,15 @@ async def cq_view_other_forecasts_list(callback: types.CallbackQuery, state: FSM
          source = f"{parts[3]}_{parts[4]}_{parts[5]}"
     
     async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.forecasts).selectinload(Forecast.user)])
+        tournament = await crud.get_tournament_with_forecasts_and_users(session, tournament_id)
         if not tournament:
-            await callback.answer("Tурнир не найден.", show_alert=True)
+            await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True)
             return
         
         forecasts = tournament.forecasts
         
     await callback.message.edit_text(
-        "📋 <b>Список прогнозистов</b>\nНажмите на участника, чтобы увидеть его прогноз:",
+        LEXICON_RU["forecast_list_title"],
         reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
     )
 
@@ -448,11 +539,11 @@ async def cq_paginate_other_forecasts(callback: types.CallbackQuery, state: FSMC
          source = f"{parts[3]}_{parts[4]}_{parts[5]}"
     
     async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.forecasts).selectinload(Forecast.user)])
+        tournament = await crud.get_tournament_with_forecasts_and_users(session, tournament_id)
         forecasts = tournament.forecasts
         
     await callback.message.edit_text(
-        "📋 <b>Список прогнозистов</b>\nНажмите на участника, чтобы увидеть его прогноз:",
+        LEXICON_RU["forecast_list_title"],
         reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
     )
 
@@ -467,32 +558,69 @@ async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FS
          source = f"{parts[2]}_{parts[3]}_{parts[4]}"
     
     async with async_session() as session:
-        forecast = await session.get(Forecast, forecast_id, options=[selectinload(Forecast.user), selectinload(Forecast.tournament)])
+        # Load forecast with tournament info
+        forecast = await crud.get_forecast_details(session, forecast_id)
         if not forecast:
-            await callback.answer("Прогноз не найден.", show_alert=True)
+            await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True) 
             return
             
         user_name = forecast.user.username or f"User {forecast.user.id}"
         
-        # Batch fetch player names for the forecast
+        # Batch fetch player names
         player_names_map = {}
         if forecast.prediction_data:
-             players_res = await session.execute(select(Player).where(Player.id.in_(forecast.prediction_data)))
-             for p in players_res.scalars():
+             players = await crud.get_players_by_ids(session, forecast.prediction_data)
+             for p in players:
                  player_names_map[p.id] = p.full_name
 
-        text = f"👤 <b>Прогноз {user_name}</b>\n\n"
+        text = LEXICON_RU["forecast_detail_title"].format(name=user_name)
         
-        for rank, player_id in enumerate(forecast.prediction_data):
-            p_name = player_names_map.get(player_id, "Неизвестный")
-            medal = ""
-            if rank == 0: medal = "🥇 "
-            elif rank == 1: medal = "🥈 "
-            elif rank == 2: medal = "🥉 "
-            text += f"{medal}{rank+1}. {p_name}\n"
+        # Check if we have results
+        results_dict = forecast.tournament.results
+        if results_dict:
+            # Convert keys to int
+            results_dict = {int(k): int(v) for k, v in results_dict.items()}
+            
+            current_hits = 0
+            for rank, player_id in enumerate(forecast.prediction_data):
+                p_name = player_names_map.get(player_id, LEXICON_RU["unknown_player"])
+                predicted_rank = rank + 1
+                
+                line_points = 0
+                extra_info = ""
+                
+                if player_id in results_dict:
+                    actual_rank = results_dict[player_id]
+                    diff = abs(predicted_rank - actual_rank)
+                    
+                    if diff == 0:
+                        line_points = 5
+                        extra_info = " (🎯 Точно!)"
+                        current_hits += 1
+                    else:
+                        line_points = 1
+                        extra_info = f" (факт: {actual_rank})"
+                else:
+                     line_points = 0
+                     extra_info = " (не в топе)"
+                
+                text += f"{predicted_rank}. {p_name}{extra_info} — <b>+{line_points}</b>\n"
+            
+            if current_hits == len(forecast.prediction_data) and len(forecast.prediction_data) > 0:
+                text += "\n🎉 <b>БОНУС: +15 очков за идеальный прогноз!</b>\n"
+                
+        else:
+            # No results yet (LIVE or just published)
+            for rank, player_id in enumerate(forecast.prediction_data):
+                p_name = player_names_map.get(player_id, LEXICON_RU["unknown_player"])
+                medal = ""
+                if rank == 0: medal = "🥇 "
+                elif rank == 1: medal = "🥈 "
+                elif rank == 2: medal = "🥉 "
+                text += f"{medal}{rank+1}. {p_name}\n"
             
         if forecast.points_earned is not None:
-            text += f"\n💰 Очки: <b>{forecast.points_earned}</b>"
+            text += LEXICON_RU["points_earned"].format(points=forecast.points_earned)
             
         await callback.message.edit_text(
             text, 
@@ -509,14 +637,14 @@ async def cq_view_participants_from_forecast(callback: types.CallbackQuery, stat
          source = f"{parts[2]}_{parts[3]}_{parts[4]}"
 
     async with async_session() as session:
-        tournament = await session.get(Tournament, tournament_id, options=[selectinload(Tournament.participants)])
+        tournament = await crud.get_tournament_with_participants(session, tournament_id)
         if not tournament:
-            await callback.answer("Турнир не найден.", show_alert=True)
+            await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True)
             return
         
-        text = f"<b>Участники турнира «{tournament.name}»</b>\n\n"
+        text = LEXICON_RU["participants_title"].format(name=tournament.name)
         if not tournament.participants:
-            text += "В этом турнире пока нет зарегистрированных участников."
+            text += LEXICON_RU["no_participants"]
         else:
             sorted_participants = sorted(
                 tournament.participants, 
