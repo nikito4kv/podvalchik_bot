@@ -398,7 +398,8 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
                 is_admin=is_admin
             )
         )
-
+    
+    await callback.answer()
     await state.clear()
 
 
@@ -500,6 +501,7 @@ async def cq_view_other_forecasts(callback: types.CallbackQuery, state: FSMConte
         text += LEXICON_RU["click_below"]
         
         await callback.message.edit_text(text, reply_markup=view_others_forecasts_menu_kb(tournament_id, source))
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith("vof_list:"))
@@ -526,6 +528,7 @@ async def cq_view_other_forecasts_list(callback: types.CallbackQuery, state: FSM
         LEXICON_RU["forecast_list_title"],
         reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
     )
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("vof_paginate:"))
 async def cq_paginate_other_forecasts(callback: types.CallbackQuery, state: FSMContext):
@@ -546,6 +549,7 @@ async def cq_paginate_other_forecasts(callback: types.CallbackQuery, state: FSMC
         LEXICON_RU["forecast_list_title"],
         reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
     )
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("vof_detail:"))
 async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FSMContext):
@@ -626,6 +630,7 @@ async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FS
             text, 
             reply_markup=view_single_forecast_back_kb(forecast.tournament_id, page=0, source=source)
         )
+        await callback.answer()
 
 @router.callback_query(F.data.startswith("vof_participants:"))
 async def cq_view_participants_from_forecast(callback: types.CallbackQuery, state: FSMContext):
@@ -660,3 +665,4 @@ async def cq_view_participants_from_forecast(callback: types.CallbackQuery, stat
         text, 
         reply_markup=view_participants_back_kb(tournament_id, source)
     )
+    await callback.answer()
