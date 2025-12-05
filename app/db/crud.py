@@ -3,7 +3,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import Tournament, TournamentStatus, Player, Forecast
+from app.db.models import Tournament, TournamentStatus, Player, Forecast, BugReport
 
 async def get_user_forecast_tournament_ids(session: AsyncSession, user_id: int) -> Sequence[int]:
     """Returns a list of tournament IDs that the user has already predicted."""
@@ -80,3 +80,7 @@ async def get_forecast_details(session: AsyncSession, forecast_id: int) -> Optio
 async def create_forecast(session: AsyncSession, forecast: Forecast) -> None:
     """Adds a new forecast to the session."""
     session.add(forecast)
+
+async def create_bug_report(session: AsyncSession, report: BugReport) -> None:
+    """Adds a new bug report to the session."""
+    session.add(report)

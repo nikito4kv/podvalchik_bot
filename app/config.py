@@ -13,3 +13,6 @@ ADMIN_IDS = [
     int(admin_id) for admin_id in ADMIN_IDS_STR.split(",") if admin_id.strip().isdigit()
 ]
 
+# Чат для баг-репортов.
+# Если не задан, можно использовать первый ID из админов или логировать ошибку.
+BUG_REPORT_CHAT_ID = os.getenv("BUG_REPORT_CHAT_ID")

@@ -45,6 +45,7 @@ class User(Base):
     avg_error = Column(Float, default=0.0)     # Legacy
 
     forecasts = relationship("Forecast", back_populates="user")
+    bug_reports = relationship("BugReport", back_populates="user")
 
 
 class Player(Base):
@@ -98,3 +99,16 @@ class Forecast(Base):
 
     user = relationship("User", back_populates="forecasts")
     tournament = relationship("Tournament", back_populates="forecasts")
+
+
+class BugReport(Base):
+    __tablename__ = "bug_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    description = Column(String, nullable=False)
+    photo_id = Column(String, nullable=True)
+    status = Column(String, default="OPEN")  # OPEN, FIXED, REJECTED
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="bug_reports")

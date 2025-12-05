@@ -4,3 +4,7 @@ class MakeForecast(StatesGroup):
     choosing_tournament = State()
     making_prediction = State() # Replaces all entering_place_X states
     confirming_forecast = State()
+
+class BugReportState(StatesGroup):
+    entering_description = State()
+    entering_screenshot = State()

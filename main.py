@@ -5,7 +5,7 @@ from aiogram.client.default import DefaultBotProperties
 
 from app.config import BOT_TOKEN
 from app.db.session import init_db
-from app.handlers import common, admin, prediction, tournament_management, pagination, player_management
+from app.handlers import common, admin, prediction, tournament_management, pagination, player_management, feedback
 from app.middlewares.auth import AuthMiddleware
 
 # Включаем логирование, чтобы видеть информацию о работе бота
@@ -29,6 +29,7 @@ async def main():
     dp.include_router(player_management.router)
     dp.include_router(pagination.router) 
     dp.include_router(prediction.router)
+    dp.include_router(feedback.router)
     dp.include_router(common.router)
 
     # Инициализируем базу данных
