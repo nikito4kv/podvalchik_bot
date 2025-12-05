@@ -35,9 +35,8 @@ def tournament_user_menu_kb(tournament_id: int, tournament_status: TournamentSta
     # SQLAlchemy with SQLite sometimes returns strings for Enums
     status_str = tournament_status.name if hasattr(tournament_status, "name") else str(tournament_status)
     
-    # Show "View Other Forecasts" only if LIVE/FINISHED or if admin
-    if status_str != "OPEN" or is_admin:
-        builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:menu")
+    # Always show "View Other Forecasts"
+    builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:menu")
         
     builder.button(text="◀️ Назад", callback_data="predict_back_to_list")
     builder.adjust(1)
@@ -187,14 +186,8 @@ def view_forecast_kb(
                  except:
                      pass
         
-        # Determine if "View Other Forecasts" should be shown
-        _show_others = show_others # Use the direct flag if provided
-        if tournament_status is not None:
-            status_str = tournament_status.name if hasattr(tournament_status, "name") else str(tournament_status)
-            _show_others = (status_str != "OPEN") or is_admin # Re-evaluate based on status/admin
-        
-        if _show_others:
-            builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:{source}")
+        # Always show "View Other Forecasts"
+        builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:{source}")
             
         builder.button(text="👥 Состав турнира", callback_data=f"vof_participants:{tournament_id}:{source}")
 
@@ -433,7 +426,8 @@ def player_management_back_kb() -> InlineKeyboardMarkup:
 def view_others_forecasts_menu_kb(tournament_id: int, source: str) -> InlineKeyboardMarkup:
     """Menu for viewing summary or detailed list of forecasts."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="📋 Список всех прогнозов", callback_data=f"vof_list:{tournament_id}:0:{source}")
+    builder.button(text="👥 Выбрать участника", callback_data=f"vof_list:{tournament_id}:0:{source}")
+    builder.button(text="📜 Лента всех прогнозов", callback_data=f"vof_all_text:{tournament_id}:{source}")
     
     # Determine back button based on source
     if source == "menu":
