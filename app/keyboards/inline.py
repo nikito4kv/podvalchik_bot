@@ -566,6 +566,28 @@ def add_global_player_success_kb() -> InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+def help_back_kb() -> InlineKeyboardMarkup:
+    """Back button for help sections."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад", callback_data="help:main")
+    return builder.as_markup()
+
+def add_player_success_kb(tournament_id: int) -> InlineKeyboardMarkup:
+    """Keyboard shown after successfully adding a player to a tournament."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Добавить еще игрока", callback_data=f"tm_add_participant_start_{tournament_id}")
+    builder.button(text="◀️ Назад в меню", callback_data=f"manage_tournament_{tournament_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def add_global_player_success_kb() -> InlineKeyboardMarkup:
+    """Keyboard shown after successfully adding a player to the global database."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Добавить еще игрока", callback_data="pm_add_new")
+    builder.button(text="◀️ Назад к списку", callback_data="pm_back_list")
+    builder.adjust(1)
+    return builder.as_markup()
+
 def tournament_start_kb(tournament_id: int) -> InlineKeyboardMarkup:
     """Keyboard for a new forecast start (no forecast yet)."""
     builder = InlineKeyboardBuilder()
@@ -573,3 +595,12 @@ def tournament_start_kb(tournament_id: int) -> InlineKeyboardMarkup:
     builder.button(text="◀️ Назад", callback_data="predict_back_to_list")
     builder.adjust(1)
     return builder.as_markup()
+
+# --- New keyboard for "All Forecasts Text" view ---
+def all_forecasts_text_back_kb(tournament_id: int, source: str) -> InlineKeyboardMarkup:
+    """Keyboard for the 'All Forecasts Text' view, with only a back button."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад", callback_data=f"vof_summary:{tournament_id}:{source}")
+    builder.adjust(1)
+    return builder.as_markup()
+

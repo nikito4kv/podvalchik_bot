@@ -22,7 +22,8 @@ from app.keyboards.inline import (
     view_single_forecast_back_kb,
     view_participants_back_kb,
     view_forecast_kb,
-    tournament_start_kb
+    tournament_start_kb,
+    all_forecasts_text_back_kb # <--- ADDED THIS IMPORT
 )
 
 router = Router()
@@ -697,14 +698,19 @@ async def cq_view_all_forecasts_text(callback: types.CallbackQuery, state: FSMCo
             for p in players:
                 player_names_map[p.id] = p.full_name
 
-        # Sort forecasts: Points desc (if any), then Username asc
+        # Sort forecasts: Points desc (if any), then Created At asc (earlier is better)
         sorted_forecasts = sorted(
             forecasts, 
-            key=lambda f: (-(f.points_earned or 0), (f.user.username or str(f.user.id)))
+            key=lambda f: (-(f.points_earned or 0), f.created_at)
         )
 
         header = LEXICON_RU["all_forecasts_header"].format(name=tournament.name)
         
+        # Prepare results dict if available
+        results_dict = {}
+        if tournament.results:
+             results_dict = {int(k): int(v) for k, v in tournament.results.items()}
+
         lines = []
         for f in sorted_forecasts:
             user_name = f.user.username or f"User {f.user.id}"
@@ -723,7 +729,21 @@ async def cq_view_all_forecasts_text(callback: types.CallbackQuery, state: FSMCo
                 elif rank == 1: prefix = "🥈"
                 elif rank == 2: prefix = "🥉"
                 
-                block += LEXICON_RU["all_forecasts_line_item"].format(rank=prefix, player=p_name)
+                # Result info
+                info_suffix = ""
+                if results_dict:
+                    actual_rank = results_dict.get(pid)
+                    predicted_rank = rank + 1
+                    
+                    if actual_rank:
+                        if predicted_rank == actual_rank:
+                            info_suffix = " (🎯 Точно!) — <b>+5</b>"
+                        else:
+                            info_suffix = f" (факт: {actual_rank}) — <b>+1</b>"
+                    else:
+                        info_suffix = " — <b>+0</b>" # Not in top results
+
+                block += f"{prefix} {p_name}{info_suffix}\n"
             
             block += "\n" # Empty line between users
             lines.append(block)
@@ -744,14 +764,10 @@ async def cq_view_all_forecasts_text(callback: types.CallbackQuery, state: FSMCo
             messages.append(current_msg)
 
         # Send messages
-        # First message edits the current one (if possible) or sends new
-        # Ideally we want to keep the user "in flow". 
-        # Editing the current message is best for the first chunk.
-        
-        back_kb = view_others_forecasts_menu_kb(tournament_id, source)
+        back_kb_for_all_text = all_forecasts_text_back_kb(tournament_id, source) # Use the new keyboard
         
         if len(messages) == 1:
-            await callback.message.edit_text(messages[0], reply_markup=back_kb)
+            await callback.message.edit_text(messages[0], reply_markup=back_kb_for_all_text)
         else:
             # If multiple, send them sequentially.
             # First one edits the menu.
@@ -759,8 +775,8 @@ async def cq_view_all_forecasts_text(callback: types.CallbackQuery, state: FSMCo
             
             for i, msg in enumerate(messages[1:]):
                 # Only the very last message gets the back button
-                is_last = (i == len(messages) - 2) # i starts at 0 (second msg), so if len=2, i=0. 0 == 2-2. Correct.
-                kb = back_kb if is_last else None
+                is_last = (i == len(messages) - 2)
+                kb = back_kb_for_all_text if is_last else None # Use the new keyboard here too
                 await callback.message.answer(msg, reply_markup=kb)
                 
     await callback.answer()
