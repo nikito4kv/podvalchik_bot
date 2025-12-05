@@ -173,7 +173,7 @@ async def cq_predict_start(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(
         tournament_id=tournament_id,
         tournament_players={
-            p.id: f"{p.full_name} ({p.current_rating})" if p.current_rating is not None else p.full_name 
+            p.id: {"name": p.full_name, "rating": p.current_rating}
             for p in players
         },
         forecast_list=[],
@@ -268,7 +268,7 @@ async def cq_edit_forecast_confirm_yes_logic(callback: types.CallbackQuery, stat
     await state.update_data(
         tournament_id=tournament.id,
         tournament_players={
-            p.id: f"{p.full_name} ({p.current_rating})" if p.current_rating is not None else p.full_name 
+            p.id: {"name": p.full_name, "rating": p.current_rating}
             for p in tournament.participants
         },
         forecast_list=[],
@@ -326,7 +326,14 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
         
         final_forecast_text = LEXICON_RU["final_forecast_header"]
         for i, pid in enumerate(forecast_list):
-            final_forecast_text += f"{i+1}. {players_dict.get(pid, LEXICON_RU['unknown_player'])}\n"
+            p_data = players_dict.get(pid)
+            if p_data:
+                p_name = p_data['name']
+                p_rating = p_data.get('rating')
+                display_name = f"{p_name} ({p_rating})" if p_rating is not None else p_name
+            else:
+                display_name = LEXICON_RU['unknown_player']
+            final_forecast_text += f"{i+1}. {display_name}\n"
         final_forecast_text += LEXICON_RU["confirm_choice"]
 
         await callback.message.edit_text(
@@ -373,7 +380,14 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
         medals = {0: "🥇", 1: "🥈", 2: "🥉"}
         for i, pid in enumerate(forecast_list):
             place = medals.get(i, f" {i+1}.")
-            player_name = players_dict.get(pid, LEXICON_RU["unknown_player"])
+            p_data = players_dict.get(pid)
+            if p_data:
+                p_name = p_data['name']
+                p_rating = p_data.get('rating')
+                player_name = f"{p_name} ({p_rating})" if p_rating is not None else p_name
+            else:
+                player_name = LEXICON_RU["unknown_player"]
+            
             text_body += f"{place} {player_name}\n"
             
         # Show buttons to manage this forecast immediately

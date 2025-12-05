@@ -34,7 +34,19 @@ async def cq_paginate_players(callback: types.CallbackQuery, state: FSMContext):
         # Cannot paginate without a list of players
         return
 
-    all_players = [Player(id=pid, full_name=name) for pid, name in player_dict.items()]
+    all_players = []
+    for pid, data_val in player_dict.items():
+        if isinstance(data_val, dict):
+            # New format: {'name': '...', 'rating': ...}
+            p = Player(
+                id=pid, 
+                full_name=data_val.get('name', 'Unknown'), 
+                current_rating=data_val.get('rating')
+            )
+        else:
+            # Old format: just string name
+            p = Player(id=pid, full_name=str(data_val))
+        all_players.append(p)
 
     # Determine which players are already selected
     # This also depends on the context

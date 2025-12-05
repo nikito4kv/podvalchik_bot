@@ -69,7 +69,7 @@ async def show_add_participant_menu(cb: types.CallbackQuery, state: FSMContext):
         all_players = all_players_res.scalars().all()
     
     await state.set_state(TournamentManagement.adding_participant_choosing_player)
-    await state.update_data(all_players={p.id: p.full_name for p in all_players})
+    await state.update_data(all_players={p.id: {"name": p.full_name, "rating": p.current_rating} for p in all_players})
     
     kb = get_paginated_players_kb(
         players=all_players, action="add_player", selected_ids=list(participant_ids),
@@ -90,7 +90,7 @@ async def show_remove_participant_menu(cb: types.CallbackQuery, state: FSMContex
         return
 
     await state.set_state(TournamentManagement.removing_participant_choosing_player)
-    await state.update_data(all_players={p.id: p.full_name for p in tournament.participants})
+    await state.update_data(all_players={p.id: {"name": p.full_name, "rating": p.current_rating} for p in tournament.participants})
     kb = get_paginated_players_kb(
         players=tournament.participants, action="remove_player",
         tournament_id=tournament_id, show_back_to_menu=True
@@ -624,7 +624,7 @@ async def msg_add_participant_create_and_add(message: types.Message, state: FSMC
             participant_ids = {p.id for p in tournament.participants}
             all_players_res = await session.execute(select(Player))
             all_players = all_players_res.scalars().all()
-            await state.update_data(all_players={p.id: p.full_name for p in all_players})
+            await state.update_data(all_players={p.id: {"name": p.full_name, "rating": p.current_rating} for p in all_players})
             kb = get_paginated_players_kb(
                 players=all_players, action="add_player", selected_ids=list(participant_ids),
                 tournament_id=tournament_id, show_create_new=True, show_back_to_menu=True
@@ -849,7 +849,7 @@ async def cq_set_results_start(callback: types.CallbackQuery, state: FSMContext)
     await state.set_state(SetResults.entering_results)
     await state.update_data(
         managed_tournament_id=tournament_id,
-        tournament_players={p.id: p.full_name for p in tournament.participants},
+        tournament_players={p.id: {"name": p.full_name, "rating": p.current_rating} for p in tournament.participants},
         results_list=[],
         prediction_count=prediction_count
     )
