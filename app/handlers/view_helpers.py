@@ -61,5 +61,5 @@ async def show_forecast_card(
         tournament_status=tournament.status
     )
 
-    await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer()
+    await callback_query.message.edit_text(text, reply_markup=kb)
+    await callback_query.answer()

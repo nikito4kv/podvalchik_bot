@@ -166,6 +166,7 @@ async def handle_rules(message: types.Message): # ADDED async
 async def cq_help_main(callback: types.CallbackQuery):
     text = "<b>📚 Справочный центр</b>\n\nВыберите интересующий вас раздел:"
     await callback.message.edit_text(text, reply_markup=help_menu_kb())
+    await callback.answer()
 
 @router.callback_query(F.data == "help:scoring")
 async def cq_help_scoring(callback: types.CallbackQuery):
@@ -184,6 +185,7 @@ async def cq_help_scoring(callback: types.CallbackQuery):
     <i>Это высшее мастерство!</i>
     """
     await callback.message.edit_text(text, reply_markup=help_back_kb())
+    await callback.answer()
 
 @router.callback_query(F.data == "help:ranks")
 async def cq_help_ranks(callback: types.CallbackQuery):
@@ -202,6 +204,7 @@ async def cq_help_ranks(callback: types.CallbackQuery):
     🎯 — Количество точных попаданий в место (+5 баллов).
     """
     await callback.message.edit_text(text, reply_markup=help_back_kb())
+    await callback.answer()
 
 @router.callback_query(F.data == "help:how_to")
 async def cq_help_howto(callback: types.CallbackQuery):
@@ -217,6 +220,7 @@ async def cq_help_howto(callback: types.CallbackQuery):
     Вы можете изменить прогноз в любой момент до начала турнира!
     """
     await callback.message.edit_text(text, reply_markup=help_back_kb())
+    await callback.answer()
 
 
 @router.message(F.text == "🗂 Архив прогнозов")

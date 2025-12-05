@@ -398,7 +398,8 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
                 is_admin=is_admin
             )
         )
-
+    
+    await callback.answer()
     await state.clear()
 
 
@@ -434,11 +435,6 @@ async def cq_view_other_forecasts(callback: types.CallbackQuery, state: FSMConte
         tournament = await crud.get_tournament_with_forecasts(session, tournament_id)
         if not tournament:
             await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True)
-            return
-
-        is_admin = user_id in ADMIN_IDS
-        if tournament.status == TournamentStatus.OPEN and not is_admin:
-            await callback.answer(LEXICON_RU["forecasts_closed"], show_alert=True)
             return
 
         forecasts = tournament.forecasts
@@ -500,6 +496,7 @@ async def cq_view_other_forecasts(callback: types.CallbackQuery, state: FSMConte
         text += LEXICON_RU["click_below"]
         
         await callback.message.edit_text(text, reply_markup=view_others_forecasts_menu_kb(tournament_id, source))
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith("vof_list:"))
@@ -526,6 +523,7 @@ async def cq_view_other_forecasts_list(callback: types.CallbackQuery, state: FSM
         LEXICON_RU["forecast_list_title"],
         reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
     )
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("vof_paginate:"))
 async def cq_paginate_other_forecasts(callback: types.CallbackQuery, state: FSMContext):
@@ -546,6 +544,7 @@ async def cq_paginate_other_forecasts(callback: types.CallbackQuery, state: FSMC
         LEXICON_RU["forecast_list_title"],
         reply_markup=get_paginated_forecasts_list_kb(forecasts, tournament_id, page, page_size=8, source=source)
     )
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("vof_detail:"))
 async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FSMContext):
@@ -626,6 +625,7 @@ async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FS
             text, 
             reply_markup=view_single_forecast_back_kb(forecast.tournament_id, page=0, source=source)
         )
+        await callback.answer()
 
 @router.callback_query(F.data.startswith("vof_participants:"))
 async def cq_view_participants_from_forecast(callback: types.CallbackQuery, state: FSMContext):
@@ -660,3 +660,107 @@ async def cq_view_participants_from_forecast(callback: types.CallbackQuery, stat
         text, 
         reply_markup=view_participants_back_kb(tournament_id, source)
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("vof_all_text:"))
+async def cq_view_all_forecasts_text(callback: types.CallbackQuery, state: FSMContext):
+    """Shows all forecasts in a compact text list."""
+    parts = callback.data.split(":")
+    tournament_id = int(parts[1])
+    source = ":".join(parts[2:])
+    if not source:
+        source = "menu"
+    if source.startswith("hist_") and len(parts) >= 5: 
+         source = f"{parts[2]}_{parts[3]}_{parts[4]}"
+
+    async with async_session() as session:
+        # Use the method that fetches Users to avoid N+1
+        tournament = await crud.get_tournament_with_forecasts_and_users(session, tournament_id)
+        if not tournament:
+            await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True)
+            return
+        
+        forecasts = tournament.forecasts
+        if not forecasts:
+            await callback.answer(LEXICON_RU["no_forecasts_yet"], show_alert=True)
+            return
+            
+        # Pre-fetch all player names
+        all_player_ids = set()
+        for f in forecasts:
+            all_player_ids.update(f.prediction_data)
+            
+        player_names_map = {}
+        if all_player_ids:
+            players = await crud.get_players_by_ids(session, all_player_ids)
+            for p in players:
+                player_names_map[p.id] = p.full_name
+
+        # Sort forecasts: Points desc (if any), then Username asc
+        sorted_forecasts = sorted(
+            forecasts, 
+            key=lambda f: (-(f.points_earned or 0), (f.user.username or str(f.user.id)))
+        )
+
+        header = LEXICON_RU["all_forecasts_header"].format(name=tournament.name)
+        
+        lines = []
+        for f in sorted_forecasts:
+            user_name = f.user.username or f"User {f.user.id}"
+            points_str = f" (💰 {f.points_earned})" if f.points_earned is not None else ""
+            
+            # User Header
+            block = LEXICON_RU["all_forecasts_user_header"].format(username=user_name, points_str=points_str)
+            
+            # Vertical list of players
+            for rank, pid in enumerate(f.prediction_data):
+                p_name = player_names_map.get(pid, LEXICON_RU["unknown_player"])
+                
+                # Medals for top 3
+                prefix = f"{rank+1}."
+                if rank == 0: prefix = "🥇"
+                elif rank == 1: prefix = "🥈"
+                elif rank == 2: prefix = "🥉"
+                
+                block += LEXICON_RU["all_forecasts_line_item"].format(rank=prefix, player=p_name)
+            
+            block += "\n" # Empty line between users
+            lines.append(block)
+
+        # Chunking logic
+        messages = []
+        current_msg = header
+        
+        for line in lines:
+            # Telegram limit is 4096. We use 4000 to be safe.
+            if len(current_msg) + len(line) > 4000:
+                messages.append(current_msg)
+                current_msg = line
+            else:
+                current_msg += line
+        
+        if current_msg:
+            messages.append(current_msg)
+
+        # Send messages
+        # First message edits the current one (if possible) or sends new
+        # Ideally we want to keep the user "in flow". 
+        # Editing the current message is best for the first chunk.
+        
+        back_kb = view_others_forecasts_menu_kb(tournament_id, source)
+        
+        if len(messages) == 1:
+            await callback.message.edit_text(messages[0], reply_markup=back_kb)
+        else:
+            # If multiple, send them sequentially.
+            # First one edits the menu.
+            await callback.message.edit_text(messages[0]) 
+            
+            for i, msg in enumerate(messages[1:]):
+                # Only the very last message gets the back button
+                is_last = (i == len(messages) - 2) # i starts at 0 (second msg), so if len=2, i=0. 0 == 2-2. Correct.
+                kb = back_kb if is_last else None
+                await callback.message.answer(msg, reply_markup=kb)
+                
+    await callback.answer()

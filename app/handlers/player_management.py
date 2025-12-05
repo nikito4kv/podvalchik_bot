@@ -36,6 +36,7 @@ async def show_players_list(message_or_cb: types.Message | types.CallbackQuery, 
         await message_or_cb.answer(text, reply_markup=kb)
     else:
         await message_or_cb.message.edit_text(text, reply_markup=kb)
+        await message_or_cb.answer()
 
 async def show_player_details(callback: types.CallbackQuery, player_id: int):
     """Helper to show player details and menu."""
@@ -53,6 +54,7 @@ async def show_player_details(callback: types.CallbackQuery, player_id: int):
             "Выберите действие:"
         )
         await callback.message.edit_text(text, reply_markup=player_management_menu_kb(player))
+        await callback.answer()
 
 
 @router.message(Command("players"))
@@ -121,6 +123,7 @@ async def cq_add_new_player(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "Введите имя и фамилию нового игрока:", reply_markup=player_management_back_kb()
     )
+    await callback.answer()
 
 @router.message(PlayerManagement.adding_new_player_name)
 async def msg_add_player_name(message: types.Message, state: FSMContext):
@@ -159,6 +162,7 @@ async def cq_skip_rating(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text(f"✅ Игрок <b>{name}</b> успешно добавлен!", reply_markup=add_global_player_success_kb())
     
     await state.clear()
+    await callback.answer()
 
 @router.message(PlayerManagement.adding_new_player_rating)
 async def msg_add_player_rating(message: types.Message, state: FSMContext):
@@ -195,6 +199,7 @@ async def cq_edit_name_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "Введите новое имя игрока:", reply_markup=player_management_back_kb()
     )
+    await callback.answer()
 
 @router.message(PlayerManagement.editing_player_name)
 async def msg_edit_name_process(message: types.Message, state: FSMContext):
@@ -233,6 +238,7 @@ async def cq_edit_rating_start(callback: types.CallbackQuery, state: FSMContext)
     await callback.message.edit_text(
         "Введите новый рейтинг (целое число):", reply_markup=player_management_back_kb()
     )
+    await callback.answer()
 
 @router.message(PlayerManagement.editing_player_rating)
 async def msg_edit_rating_process(message: types.Message, state: FSMContext):

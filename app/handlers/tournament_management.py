@@ -76,6 +76,7 @@ async def show_add_participant_menu(cb: types.CallbackQuery, state: FSMContext):
         tournament_id=tournament_id, show_create_new=True, show_back_to_menu=True
     )
     await cb.message.edit_text("Выберите игрока для добавления:", reply_markup=kb)
+    await cb.answer()
 
 async def show_remove_participant_menu(cb: types.CallbackQuery, state: FSMContext):
     """Shows the paginated menu for removing players."""
@@ -95,6 +96,7 @@ async def show_remove_participant_menu(cb: types.CallbackQuery, state: FSMContex
         tournament_id=tournament_id, show_back_to_menu=True
     )
     await cb.message.edit_text("Выберите игрока для удаления:", reply_markup=kb)
+    await cb.answer()
 
 
 # --- UI BUILDERS ---
@@ -297,6 +299,7 @@ async def cq_delete_tournament_confirm(callback: types.CallbackQuery, state: FSM
         f"Вы уверены, что хотите удалить турнир ID {tournament_id}? Это действие необратимо.",
         reply_markup=confirmation_kb("confirm_delete")
     )
+    await callback.answer()
 
 @router.callback_query(TournamentManagement.managing_tournament, F.data == "confirm_delete:yes")
 async def cq_delete_tournament_execute(callback: types.CallbackQuery, state: FSMContext):
@@ -816,7 +819,7 @@ async def notify_forecasters_status_change(bot: Bot, tournament_id: int, tournam
     if new_status == "LIVE":
         text = (
             f"🔐 <b>Ставки на турнир «{tournament_name}» закрыты!</b>\n\n"
-            "Турнир начался. Теперь вы можете посмотреть прогнозы других участников и болеть за своих фаворитов!"
+            "Турнир начался! Болейте за своих фаворитов!"
         )
         builder.button(text="👀 Прогнозы участников", callback_data=f"vof_summary:{tournament_id}:active")
     else: # OPEN
@@ -893,6 +896,7 @@ async def cq_set_results_confirm(callback: types.CallbackQuery, state: FSMContex
     results_dict = {player_id: rank + 1 for rank, player_id in enumerate(results_list)}
 
     await callback.message.edit_text("⏳ Начинаю расчет очков и рассылку...")
+    await callback.answer()
 
     async with async_session() as session:
         try:
