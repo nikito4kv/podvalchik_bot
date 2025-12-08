@@ -32,6 +32,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True)  # Telegram ID
     username = Column(String)
+    full_name = Column(String, default="") # Real name from Telegram
     balance = Column(Integer, default=0)
     total_points = Column(Integer, default=0)
     total_slots = Column(Integer, default=0) # Общее количество угадываемых мест во всех прогнозах

@@ -9,7 +9,7 @@ from app.db.models import Tournament, TournamentStatus, Player, Forecast
 from app.db.session import async_session
 from app.states.user_states import MakeForecast
 from app.config import ADMIN_IDS
-from app.utils.formatting import draw_progress_bar
+from app.utils.formatting import format_user_name
 from app.lexicon.ru import LEXICON_RU
 from app.handlers.view_helpers import show_forecast_card
 from app.keyboards.inline import (
@@ -578,7 +578,7 @@ async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FS
             await callback.answer(LEXICON_RU["tournament_not_found"], show_alert=True) 
             return
             
-        user_name = forecast.user.username or f"User {forecast.user.id}"
+        display_name = format_user_name(forecast.user)
         
         # Batch fetch player names
         player_names_map = {}
@@ -587,7 +587,7 @@ async def cq_view_other_forecast_detail(callback: types.CallbackQuery, state: FS
              for p in players:
                  player_names_map[p.id] = p.full_name
 
-        text = LEXICON_RU["forecast_detail_title"].format(name=user_name)
+        text = LEXICON_RU["forecast_detail_title"].format(name=display_name)
         
         # Check if we have results
         results_dict = forecast.tournament.results
@@ -727,11 +727,12 @@ async def cq_view_all_forecasts_text(callback: types.CallbackQuery, state: FSMCo
 
         lines = []
         for f in sorted_forecasts:
-            user_name = f.user.username or f"User {f.user.id}"
+            display_name = format_user_name(f.user)
+
             points_str = f" (💰 {f.points_earned})" if f.points_earned is not None else ""
             
             # User Header
-            block = LEXICON_RU["all_forecasts_user_header"].format(username=user_name, points_str=points_str)
+            block = LEXICON_RU["all_forecasts_user_header"].format(username=display_name, points_str=points_str)
             
             # Vertical list of players
             for rank, pid in enumerate(f.prediction_data):

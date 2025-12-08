@@ -31,4 +31,13 @@ class AuthMiddleware(BaseMiddleware):
                     await event.answer(text, show_alert=True)
                 return # Stop execution here
             
+            # Update info if changed
+            current_full_name = event.from_user.full_name
+            current_username = event.from_user.username
+            
+            if user.full_name != current_full_name or user.username != current_username:
+                user.full_name = current_full_name
+                user.username = current_username
+                await session.commit()
+            
         return await handler(event, data)

@@ -36,6 +36,7 @@ async def cmd_start(message: types.Message):
             new_user = User(
                 id=message.from_user.id,
                 username=message.from_user.username or "unknown",
+                full_name=message.from_user.full_name
             )
             session.add(new_user)
             await session.commit()
@@ -122,38 +123,30 @@ async def handle_leaderboard(message: types.Message):
         await message.answer("Рейтинг пока пуст. Сделайте первый прогноз!")
         return
 
-    leaderboard_text = "<b>🏆 Топ-10 прогнозистов клуба:</b>\n\n<code>"
-    
-    # Add headers
-    # Compact header for mobile: # Name Pts Gms Dia
-    leaderboard_text += " #     Игрок      Очки Игр 💎\n"
+    leaderboard_text = "<b>🏆 Топ-10 прогнозистов клуба:</b>\n\n"
     
     for i, user in enumerate(top_users, 1):
-        place_num = i
-        username = user.username or f"id{user.id}"
         rank_icon = get_user_rank(user.total_points).split()[0]
         
-        t_played = user.tournaments_played or 0
-        
-        # Only show diamonds count if > 0
-        diamonds_str = f"{user.perfect_tournaments}" if user.perfect_tournaments and user.perfect_tournaments > 0 else ""
-        
-        display_username = username
-        # Truncate name to 10 chars for mobile optimization
-        if len(display_username) > 10:
-            display_username = display_username[:9] + "…"
-        
-        line = (
-            f"{place_num:>2}. "
-            f"{rank_icon} "
-            f"{display_username:<10} "
-            f"{user.total_points:>4} "
-            f"{t_played:>3} "
-            f"{diamonds_str}"
-        )
-        leaderboard_text += f"{line}\n"
+        # Line 1: Name and Username
+        display_name = user.full_name
+        if not display_name and user.username: # If full_name is empty, use username
+            display_name = user.username
+        elif not display_name: # If both empty, use ID
+            display_name = f"id:{user.id}"
+            
+        if user.full_name and user.username: # If both exist, add username in parentheses
+            display_name = f"{user.full_name} (@{user.username})"
 
-    leaderboard_text += "</code>"
+        # Line 2: Stats
+        t_played = user.tournaments_played or 0
+        diamonds_str = f" | {user.perfect_tournaments} 💎" if user.perfect_tournaments and user.perfect_tournaments > 0 else ""
+        
+        leaderboard_text += (
+            f"{i}. {rank_icon} {display_name}\n"
+            f"   <b>{user.total_points}</b> 💰 | {t_played} игр 🎮{diamonds_str}\n\n"
+        )
+
     await message.answer(leaderboard_text)
 
 

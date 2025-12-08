@@ -8,6 +8,7 @@ from app.db.models import BugReport
 from app.db import crud
 from app.states.user_states import BugReportState
 from app.config import BUG_REPORT_CHAT_ID
+from app.utils.formatting import format_user_name
 
 router = Router()
 
@@ -65,7 +66,7 @@ async def process_bug_description(message: types.Message, state: FSMContext):
             "Пожалуйста, сократите текст и отправьте его снова."
         )
         return
-
+        
     await state.update_data(description=message.text)
     await state.set_state(BugReportState.entering_screenshot)
     
@@ -85,8 +86,6 @@ async def process_bug_description(message: types.Message, state: FSMContext):
 async def save_and_send_report(message_or_cb: types.Message | types.CallbackQuery, state: FSMContext, photo_id: str | None):
     data = await state.get_data()
     description = data.get("description")
-    
-    # Extract user correctly
     user = message_or_cb.from_user
     
     # Save to DB
@@ -107,7 +106,6 @@ async def save_and_send_report(message_or_cb: types.Message | types.CallbackQuer
     if isinstance(message_or_cb, types.Message):
         await message_or_cb.answer(success_text)
     else:
-        # Edit the message with buttons to remove them
         try:
             await message_or_cb.message.edit_text(success_text)
         except Exception:
@@ -115,9 +113,12 @@ async def save_and_send_report(message_or_cb: types.Message | types.CallbackQuer
 
     # Send notification to Bug Chat
     if BUG_REPORT_CHAT_ID:
+        # Use utility for name
+        display_name = format_user_name(user)
+        
         report_text = (
             f"🐛 <b>Новый баг-репорт #{report_id}</b>\n\n"
-            f"👤 <b>От:</b> {user.full_name} (@{user.username or 'нет'})\n"
+            f"👤 <b>От:</b> {display_name}\n"
             f"🆔 <b>User ID:</b> <code>{user.id}</code>\n\n"
             f"📝 <b>Описание:</b>\n{description}"
         )

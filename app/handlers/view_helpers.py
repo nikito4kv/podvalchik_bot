@@ -1,10 +1,6 @@
-from typing import List
 from aiogram import types
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy.orm import joinedload
-from sqlalchemy import select
 
-from app.db.models import Tournament, Forecast, Player, TournamentStatus
+from app.db.models import Tournament, Forecast, TournamentStatus
 from app.keyboards.inline import view_forecast_kb
 from app.lexicon.ru import LEXICON_RU
 from app.db import crud

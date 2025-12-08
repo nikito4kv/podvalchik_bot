@@ -472,7 +472,7 @@ def get_paginated_forecasts_list_kb(
     page_forecasts = sorted_forecasts[start_index:end_index]
 
     for f in page_forecasts:
-        user_name = f.user.username or f"User {f.user_id}"
+        user_name = f.user.full_name or f.user.username or f"User {f.user_id}"
         points_str = f" ({f.points_earned} очков)" if f.points_earned is not None else ""
         builder.button(
             text=f"👤 {user_name}{points_str}", 

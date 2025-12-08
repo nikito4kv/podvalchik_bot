@@ -24,7 +24,7 @@ from app.keyboards.inline import (
     add_player_success_kb
 )
 from app.core.scoring import calculate_forecast_points, calculate_new_stats
-from app.utils.formatting import format_player_list, get_medal_str
+from app.utils.formatting import format_player_list, get_medal_str, format_user_name
 from app.utils.broadcaster import broadcast_message
 
 
@@ -349,7 +349,12 @@ async def cq_show_tournament_results(callback: types.CallbackQuery, state: FSMCo
         text += "--------------------------------------\n" # Adjusted separator length
         
         for i, f in enumerate(sorted_forecasts, 1):
-            user_name = f.user.username or f"id{f.user_id}"
+            display_name = f.user.full_name or f.user.username or f"id{f.user_id}"
+            if f.user.full_name and f.user.username:
+                display_name = f"{f.user.full_name} (@{f.user.username})"
+            elif f.user.username:
+                display_name = f"@{f.user.username}"
+
             points = f.points_earned or 0
             
             # Conditional display of created_at
@@ -361,9 +366,15 @@ async def cq_show_tournament_results(callback: types.CallbackQuery, state: FSMCo
             else:
                 created_time_str = "N/A  " # Placeholder for old/fake entries, with padding
             
-            display_name = user_name
-            if len(display_name) > 15:
-                display_name = display_name[:12] + "..."
+            # Adjust display_name to fit in 15 characters, prioritizing username if present
+            final_display_name = display_name
+            if len(final_display_name) > 15:
+                if f.user.username and len(f"@{f.user.username}") <= 15:
+                    final_display_name = f"@{f.user.username}"
+                elif f.user.full_name and len(f.user.full_name) <= 15:
+                    final_display_name = f.user.full_name
+                else:
+                    final_display_name = final_display_name[:12] + "..."
             
             place_icon = f"{i}."
             if i == 1: place_icon = "🥇"
@@ -371,7 +382,7 @@ async def cq_show_tournament_results(callback: types.CallbackQuery, state: FSMCo
             elif i == 3: place_icon = "🥉"
             
             # Adjusted points width to ensure alignment
-            line = f"{place_icon:<3} {display_name:<15} {points:>5}   {created_time_str}" # Points width increased to 5
+            line = f"{place_icon:<3} {final_display_name:<15} {points:>5}   {created_time_str}" # Points width increased to 5
             text += f"{line}\n"
             
         text += "</code>"
@@ -1017,7 +1028,7 @@ async def cq_set_results_confirm(callback: types.CallbackQuery, state: FSMContex
 
                     user_message = (
                         f"<b>Итоги турнира «{tournament.name}» от {tournament.date.strftime('%d.%m.%Y')}</b>\n\n"
-                        f"{results_text}\n"
+                        f"{results_text}\n\n" # Added an extra newline here
                         f"{prediction_text}\n"
                         f"<b>💰 Итого очков: {total_points}</b>"
                     )
@@ -1035,8 +1046,10 @@ async def cq_set_results_confirm(callback: types.CallbackQuery, state: FSMContex
             
             for i, forecast in enumerate(all_forecasters):
                 place = get_medal_str(i + 1)
-                username = forecast.user.username or f"id:{forecast.user.id}"
-                line = f"{place} @{username} - <b>{forecast.points_earned or 0}</b> очков\n"
+                
+                display_name = format_user_name(forecast.user)
+
+                line = f"{place} {display_name} - <b>{forecast.points_earned or 0}</b> очков\n"
                 
                 if len(admin_summary_text) + len(line) > 4000:
                     await callback.message.answer(admin_summary_text)

@@ -1,5 +1,8 @@
 from typing import List, Dict
 
+# Need to import User model? No, to avoid circular imports, we'll pass attributes or a duck-typed object.
+# But typing is good. We can use 'Any' or just expect attributes.
+
 def get_medal_str(rank: int) -> str:
     """Returns a medal icon or the rank number formatted."""
     if rank == 1: return "🥇"
@@ -22,16 +25,6 @@ def format_player_list(player_ids: List[int], player_names_map: Dict[int, str]) 
         lines.append(f"{medal} {name}")
     return "\n".join(lines)
 
-def draw_progress_bar(percent: int, length: int = 8) -> str:
-    """
-    Draws a text progress bar.
-    Example:
-    [■■■■□□□□]
-    """
-    filled_len = int(length * percent / 100)
-    bar = "■" * filled_len + "□" * (length - filled_len)
-    return f"<code>[{bar}]</code>"
-
 def get_user_rank(points: int) -> str:
     """Returns the user's rank title based on points."""
     if points < 50: return "👶 Новичок"
@@ -39,3 +32,21 @@ def get_user_rank(points: int) -> str:
     if points < 500: return "🎱 Профи"
     if points < 1000: return "🧠 Эксперт"
     return "🔮 Оракул"
+
+def format_user_name(user: object) -> str:
+    """
+    Returns a formatted user name with username if available.
+    Format: "Full Name (@username)" or "Full Name" or "@username" or "id:123".
+    Accepts a User model object or any object with full_name, username, id attributes.
+    """
+    full_name = getattr(user, "full_name", None)
+    username = getattr(user, "username", None)
+    user_id = getattr(user, "id", "?")
+
+    if full_name and username:
+        return f"{full_name} (@{username})"
+    if full_name:
+        return full_name
+    if username:
+        return f"@{username}"
+    return f"id:{user_id}"
