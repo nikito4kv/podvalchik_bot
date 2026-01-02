@@ -84,3 +84,17 @@ async def create_forecast(session: AsyncSession, forecast: Forecast) -> None:
 async def create_bug_report(session: AsyncSession, report: BugReport) -> None:
     """Adds a new bug report to the session."""
     session.add(report)
+
+async def get_forecasts_by_date(session: AsyncSession, target_date) -> Sequence[Forecast]:
+    """Returns all forecasts for tournaments occurring on the specified date."""
+    stmt = (
+        select(Forecast)
+        .join(Forecast.tournament)
+        .where(Tournament.date == target_date)
+        .options(
+            selectinload(Forecast.user),
+            selectinload(Forecast.tournament)
+        )
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()

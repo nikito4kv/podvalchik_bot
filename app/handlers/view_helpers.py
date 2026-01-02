@@ -4,7 +4,7 @@ from app.db.models import Tournament, Forecast, TournamentStatus
 from app.keyboards.inline import view_forecast_kb
 from app.lexicon.ru import LEXICON_RU
 from app.db import crud
-from app.config import ADMIN_IDS
+from app.config import config
 
 async def show_forecast_card(
     callback_query: types.CallbackQuery, 
@@ -43,7 +43,7 @@ async def show_forecast_card(
     allow_edit = (tournament.status == TournamentStatus.OPEN) 
     
     # Show 'Other Forecasts' only if NOT OPEN or if admin
-    is_admin = callback_query.from_user.id in ADMIN_IDS
+    is_admin = callback_query.from_user.id in config.admin_ids
     status_str = tournament.status.name if hasattr(tournament.status, "name") else str(tournament.status)
     show_others = (status_str != "OPEN") or is_admin
 

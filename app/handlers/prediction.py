@@ -3,12 +3,14 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
+from datetime import datetime # ADDED
+import pytz # ADDED
 
 from app.db import crud
-from app.db.models import Tournament, TournamentStatus, Player, Forecast
+from app.db.models import Tournament, TournamentStatus, Player, Forecast, User
 from app.db.session import async_session
 from app.states.user_states import MakeForecast
-from app.config import ADMIN_IDS
+from app.config import config
 from app.utils.formatting import format_user_name
 from app.lexicon.ru import LEXICON_RU
 from app.handlers.view_helpers import show_forecast_card
@@ -369,6 +371,26 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
         if editing_forecast_id:
             await crud.delete_forecast(session, editing_forecast_id)
         
+        # Streak logic
+        user = await session.get(User, callback.from_user.id)
+        if user:
+            # Get timezone-aware current date for 'Asia/Tbilisi'
+            tbilisi_tz = pytz.timezone('Asia/Tbilisi')
+            now_in_tbilisi = datetime.now(tbilisi_tz)
+            today_date_in_tbilisi = now_in_tbilisi.date() # Get the date part in Tbilisi timezone
+
+            if user.last_forecast_date:
+                diff = today_date_in_tbilisi - user.last_forecast_date
+                if diff.days == 1: # Forecast made on the next consecutive day in Tbilisi time
+                    user.streak_days += 1
+                elif diff.days > 1: # Gap between forecasts, reset streak
+                    user.streak_days = 1
+                # else: Forecast made on the same day in Tbilisi time, streak remains unchanged
+            else:
+                user.streak_days = 1 # First forecast ever
+            user.last_forecast_date = today_date_in_tbilisi # Update with Tbilisi date
+            session.add(user) # Mark for update
+
         await crud.create_forecast(session, new_forecast)
         await session.commit()
         await session.refresh(new_forecast) # Get ID
@@ -393,7 +415,7 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
         # Show buttons to manage this forecast immediately
         # User just made a forecast, so status is likely OPEN.
         # Show others only if admin.
-        is_admin = callback.from_user.id in ADMIN_IDS
+        is_admin = callback.from_user.id in config.admin_ids
         
         # We don't have forecast.tournament loaded here easily (forecast object is new)
         # But we know it's OPEN.

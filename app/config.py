@@ -1,18 +1,22 @@
-import os
-from dotenv import load_dotenv
+from typing import List, Optional, Union
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
 
-load_dotenv()
+class Settings(BaseSettings):
+    bot_token: str
+    database_url: str
+    admin_ids: Union[List[int], str] = Field(default_factory=list)
+    bug_report_chat_id: Optional[Union[int, str]] = None
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-# Загружаем ID администраторов из .env.
-# Это должна быть строка с ID, разделенными запятыми (e.g., "12345,67890")
-ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
-ADMIN_IDS = [
-    int(admin_id) for admin_id in ADMIN_IDS_STR.split(",") if admin_id.strip().isdigit()
-]
+    @field_validator("admin_ids", mode="before")
+    @classmethod
+    def parse_admin_ids(cls, v):
+        if isinstance(v, str):
+            return [int(x.strip()) for x in v.split(",") if x.strip().isdigit()]
+        if isinstance(v, int):
+            return [v]
+        return v
 
-# Чат для баг-репортов.
-# Если не задан, можно использовать первый ID из админов или логировать ошибку.
-BUG_REPORT_CHAT_ID = os.getenv("BUG_REPORT_CHAT_ID")
+config = Settings()

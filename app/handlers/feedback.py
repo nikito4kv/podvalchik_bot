@@ -7,7 +7,7 @@ from app.db.session import async_session
 from app.db.models import BugReport
 from app.db import crud
 from app.states.user_states import BugReportState
-from app.config import BUG_REPORT_CHAT_ID
+from app.config import config
 from app.utils.formatting import format_user_name
 
 router = Router()
@@ -31,6 +31,7 @@ async def cancel_bug_report(message_or_cb: types.Message | types.CallbackQuery, 
 @router.message(Command("bug"))
 async def cmd_bug_start(message: types.Message, state: FSMContext):
     """Starts the bug reporting process."""
+    print(f"DEBUG: /bug command received from {message.from_user.id}")
     await state.set_state(BugReportState.entering_description)
     
     builder = InlineKeyboardBuilder()
@@ -112,7 +113,7 @@ async def save_and_send_report(message_or_cb: types.Message | types.CallbackQuer
             await message_or_cb.message.answer(success_text)
 
     # Send notification to Bug Chat
-    if BUG_REPORT_CHAT_ID:
+    if config.bug_report_chat_id:
         # Use utility for name
         display_name = format_user_name(user)
         
@@ -126,9 +127,9 @@ async def save_and_send_report(message_or_cb: types.Message | types.CallbackQuer
         try:
             bot: Bot = message_or_cb.bot
             if photo_id:
-                await bot.send_photo(chat_id=BUG_REPORT_CHAT_ID, photo=photo_id, caption=report_text)
+                await bot.send_photo(chat_id=config.bug_report_chat_id, photo=photo_id, caption=report_text)
             else:
-                await bot.send_message(chat_id=BUG_REPORT_CHAT_ID, text=report_text)
+                await bot.send_message(chat_id=config.bug_report_chat_id, text=report_text)
         except Exception as e:
             print(f"Error sending bug report to chat: {e}")
     

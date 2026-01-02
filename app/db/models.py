@@ -1,7 +1,6 @@
 import enum
 import datetime
 from sqlalchemy import (
-    create_engine,
     Column,
     Integer,
     String,
@@ -14,18 +13,37 @@ from sqlalchemy import (
     Table,
     Boolean,
 )
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
 
-# Таблица для связи многие-ко-многим между Турнирами и Игроками
-tournament_participants = Table(
-    "tournament_participants",
-    Base.metadata,
-    Column("tournament_id", ForeignKey("tournaments.id"), primary_key=True),
-    Column("player_id", ForeignKey("players.id"), primary_key=True),
-)
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc)
 
+class Season(Base):
+    __tablename__ = "seasons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    number = Column(Integer, unique=True, nullable=False) # Season 1, 2, 3...
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    status = Column(String, default="active") # active, closed
+
+    results = relationship("SeasonResult", back_populates="season", cascade="all, delete-orphan")
+
+class SeasonResult(Base):
+    __tablename__ = "season_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    season_id = Column(Integer, ForeignKey("seasons.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    rank = Column(Integer, nullable=False)
+    points = Column(Integer, nullable=False)
+    tournaments_played = Column(Integer, default=0)
+    user_snapshot = Column(JSON, nullable=True)
+
+    season = relationship("Season", back_populates="results")
+    user = relationship("User")
 
 class User(Base):
     __tablename__ = "users"
@@ -42,11 +60,24 @@ class User(Base):
     exact_guesses = Column(Integer, default=0)      # 🎯 (5 баллов)
     perfect_tournaments = Column(Integer, default=0) # 💎 (Бонус +15)
 
+    streak_days = Column(Integer, default=0) # Consecutive days/tournaments with a forecast
+    max_streak = Column(Integer, default=0)  # Max consecutive tournaments played
+    last_forecast_date = Column(Date, nullable=True) # Last date a forecast was made
+
     accuracy_rate = Column(Float, default=0.0) # Legacy
     avg_error = Column(Float, default=0.0)     # Legacy
 
     forecasts = relationship("Forecast", back_populates="user")
     bug_reports = relationship("BugReport", back_populates="user")
+
+
+# Association table for Tournament <-> Player
+tournament_participants = Table(
+    "tournament_participants",
+    Base.metadata,
+    Column("tournament_id", Integer, ForeignKey("tournaments.id"), primary_key=True),
+    Column("player_id", Integer, ForeignKey("players.id"), primary_key=True),
+)
 
 
 class Player(Base):
@@ -96,7 +127,7 @@ class Forecast(Base):
     tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=False)
     prediction_data = Column(JSON, nullable=False)  # [player_id_1st, player_id_2nd, ...]
     points_earned = Column(Integer)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     user = relationship("User", back_populates="forecasts")
     tournament = relationship("Tournament", back_populates="forecasts")
@@ -110,6 +141,6 @@ class BugReport(Base):
     description = Column(String, nullable=False)
     photo_id = Column(String, nullable=True)
     status = Column(String, default="OPEN")  # OPEN, FIXED, REJECTED
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     user = relationship("User", back_populates="bug_reports")

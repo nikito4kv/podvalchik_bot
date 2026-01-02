@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
 import asyncio
 import datetime
+import html
 import logging
 
 from app.filters.is_admin import IsAdmin
@@ -488,8 +489,10 @@ async def notify_predictors_of_change(bot: Bot, session: async_session, tourname
 
     action_text = "добавлен в" if action == "added" else "удален из"
     rating_info = f" (Рейтинг: {changed_player.current_rating})" if changed_player.current_rating is not None else ""
+    p_name = html.escape(changed_player.full_name)
+    t_name = html.escape(tournament.name)
     message_text = (
-        f"Внимание! Участник <b>{changed_player.full_name}</b>{rating_info} был {action_text} турнир «{tournament.name}».\n"
+        f"Внимание! Участник <b>{p_name}</b>{rating_info} был {action_text} турнир «{t_name}».\n"
         "Возможно, вы захотите обновить свой прогноз."
     )
     

@@ -8,3 +8,6 @@ class MakeForecast(StatesGroup):
 class BugReportState(StatesGroup):
     entering_description = State()
     entering_screenshot = State()
+
+class LeaderboardState(StatesGroup):
+    waiting_for_date = State()
