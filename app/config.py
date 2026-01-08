@@ -5,6 +5,8 @@ from pydantic import Field, field_validator
 class Settings(BaseSettings):
     bot_token: str
     database_url: str
+    redis_host: str = "localhost"
+    redis_port: int = 6379
     admin_ids: Union[List[int], str] = Field(default_factory=list)
     bug_report_chat_id: Optional[Union[int, str]] = None
 

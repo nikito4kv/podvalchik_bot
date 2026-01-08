@@ -34,8 +34,7 @@ async def main():
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
     
     # Инициализация Redis для FSM
-    # Используем localhost, так как бот запускается локально, а Redis в Docker с портом 6379
-    redis = Redis(host='localhost', port=6379)
+    redis = Redis(host=config.redis_host, port=config.redis_port)
     storage = RedisStorage(redis=redis)
     
     # Диспетчер с Redis хранилищем
