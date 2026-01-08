@@ -16,15 +16,19 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            # Переходим в папку проекта (замените путь, если он другой)
+            # Если папки нет - клонируем проект
+            if [ ! -d "podval_test_bot" ]; then
+              git clone https://github.com/nikito4kv/podvalchik_bot.git podval_test_bot
+            fi
+
+            # Переходим в папку
             cd ~/podval_test_bot
             
             # Обновляем код
-            git pull
+            git pull origin main
             
-            # Пересобираем и перезапускаем бота
-            # --build гарантирует, что если обновились библиотеки, образ пересоберется
-            docker compose up -d --build
+            # Пересобираем и перезапускаем
+            sudo docker compose up -d --build
             
-            # Применяем миграции БД (выполняем команду внутри контейнера с ботом)
-            docker compose exec -T bot alembic upgrade head
+            # Применяем миграции
+            sudo docker compose exec -T bot alembic upgrade head
