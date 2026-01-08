@@ -11,9 +11,9 @@ from app.db.models import (
 )
 
 # Configs
-SQLITE_URL = "sqlite+aiosqlite:///./app1.db"
-# Explicitly set Postgres URL matching docker-compose
-POSTGRES_URL = "postgresql+asyncpg://podval_user:podval_password@localhost:5432/podval_bot_db"
+SQLITE_URL = "sqlite+aiosqlite:///app1.db" # Adjusted for app1.db in root inside container
+# Use DATABASE_URL from environment or fallback
+POSTGRES_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://podval_user:podval_password@db:5432/podval_bot_db")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
