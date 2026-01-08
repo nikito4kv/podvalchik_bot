@@ -2,6 +2,8 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.redis import RedisStorage # Added
+from redis.asyncio import Redis # Added
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -28,9 +30,16 @@ async def main():
     """
     Главная функция, запускающая бота
     """
-    # Инициализация бота и диспетчера
+    # Инициализация бота
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
-    dp = Dispatcher()
+    
+    # Инициализация Redis для FSM
+    # Используем localhost, так как бот запускается локально, а Redis в Docker с портом 6379
+    redis = Redis(host='localhost', port=6379)
+    storage = RedisStorage(redis=redis)
+    
+    # Диспетчер с Redis хранилищем
+    dp = Dispatcher(storage=storage)
 
     # Middleware
     dp.message.middleware(AuthMiddleware())

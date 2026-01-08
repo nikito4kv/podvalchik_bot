@@ -1,0 +1,30 @@
+name: Deploy Bot
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            # Переходим в папку проекта (замените путь, если он другой)
+            cd ~/podval_test_bot
+            
+            # Обновляем код
+            git pull
+            
+            # Пересобираем и перезапускаем бота
+            # --build гарантирует, что если обновились библиотеки, образ пересоберется
+            docker compose up -d --build
+            
+            # Применяем миграции БД (выполняем команду внутри контейнера с ботом)
+            docker compose exec -T bot alembic upgrade head

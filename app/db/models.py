@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Table,
     Boolean,
+    BigInteger, # Added
 )
 from sqlalchemy.orm import relationship, declarative_base
 
@@ -36,7 +37,7 @@ class SeasonResult(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     season_id = Column(Integer, ForeignKey("seasons.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False) # Changed to BigInteger
     rank = Column(Integer, nullable=False)
     points = Column(Integer, nullable=False)
     tournaments_played = Column(Integer, default=0)
@@ -48,7 +49,7 @@ class SeasonResult(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True)  # Telegram ID
+    id = Column(BigInteger, primary_key=True)  # Telegram ID (Changed to BigInteger)
     username = Column(String)
     full_name = Column(String, default="") # Real name from Telegram
     balance = Column(Integer, default=0)
@@ -123,7 +124,7 @@ class Forecast(Base):
     __tablename__ = "forecasts"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False) # Changed to BigInteger
     tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=False)
     prediction_data = Column(JSON, nullable=False)  # [player_id_1st, player_id_2nd, ...]
     points_earned = Column(Integer)
@@ -137,7 +138,7 @@ class BugReport(Base):
     __tablename__ = "bug_reports"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False) # Changed to BigInteger
     description = Column(String, nullable=False)
     photo_id = Column(String, nullable=True)
     status = Column(String, default="OPEN")  # OPEN, FIXED, REJECTED
