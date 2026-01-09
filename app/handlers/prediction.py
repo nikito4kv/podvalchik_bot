@@ -328,7 +328,7 @@ async def cq_process_prediction_selection(callback: types.CallbackQuery, state: 
         
         final_forecast_text = LEXICON_RU["final_forecast_header"]
         for i, pid in enumerate(forecast_list):
-            p_data = players_dict.get(pid)
+            p_data = players_dict.get(pid) or players_dict.get(str(pid))
             if p_data:
                 p_name = p_data['name']
                 p_rating = p_data.get('rating')
@@ -402,7 +402,7 @@ async def cq_predict_confirm(callback: types.CallbackQuery, state: FSMContext):
         medals = {0: "🥇", 1: "🥈", 2: "🥉"}
         for i, pid in enumerate(forecast_list):
             place = medals.get(i, f" {i+1}.")
-            p_data = players_dict.get(pid)
+            p_data = players_dict.get(pid) or players_dict.get(str(pid))
             if p_data:
                 p_name = p_data['name']
                 p_rating = p_data.get('rating')

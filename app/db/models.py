@@ -19,7 +19,7 @@ from sqlalchemy.orm import relationship, declarative_base
 Base = declarative_base()
 
 def utc_now():
-    return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 class Season(Base):
     __tablename__ = "seasons"
