@@ -2,6 +2,8 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.fsm.storage.redis import RedisStorage  # Added
 from aiogram.fsm.storage.memory import MemoryStorage
 from redis.asyncio import Redis  # Added
@@ -33,7 +35,19 @@ async def main():
     Главная функция, запускающая бота
     """
     # Инициализация бота
-    bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
+    if config.tg_api_server:
+        server = TelegramAPIServer.from_base(config.tg_api_server)
+        session = AiohttpSession(api=server)
+        bot = Bot(
+            token=config.bot_token,
+            session=session,
+            default=DefaultBotProperties(parse_mode="HTML"),
+        )
+        logging.info(f"Using custom Telegram API server: {config.tg_api_server}")
+    else:
+        bot = Bot(
+            token=config.bot_token, default=DefaultBotProperties(parse_mode="HTML")
+        )
 
     # Инициализация Redis для FSM (с безопасным fallback)
     try:
