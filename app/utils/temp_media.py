@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from urllib.parse import urlparse
 
-import aiohttp
+import requests
 
 from app.config import config
 
@@ -35,16 +35,19 @@ def _upload_url() -> str:
     return upload_url
 
 
-def _build_form_data(media_bytes: bytes, filename: str) -> aiohttp.FormData:
-    form = aiohttp.FormData()
-    form.add_field(
-        "file",
-        media_bytes,
-        filename=filename,
-        content_type="image/png",
-    )
-    form.add_field("secret", "")
-    return form
+def _build_user_agent() -> str:
+    user_agent = config.temp_media_user_agent.strip() or "PodvalchikBot/1.0"
+    if "forecast_podvalchik_bot" in user_agent or "t.me/" in user_agent:
+        return user_agent
+    return f"{user_agent} (+https://t.me/forecast_podvalchik_bot)"
+
+
+def _build_form_data(
+    media_bytes: bytes, filename: str
+) -> dict[str, tuple[str, bytes, str]]:
+    return {
+        "file": (filename, media_bytes, "image/png"),
+    }
 
 
 def _extract_key(file_url: str) -> str:
@@ -59,34 +62,35 @@ async def upload_temp_media(
     upload_url = _upload_url()
     max_attempts = max(1, config.tg_media_max_attempts)
     backoff_seconds = max(0.0, config.tg_media_retry_backoff_seconds)
-    timeout = aiohttp.ClientTimeout(total=max(1, config.temp_media_upload_timeout))
+    timeout_seconds = max(1, config.temp_media_upload_timeout)
     headers = {
-        "User-Agent": config.temp_media_user_agent,
+        "User-Agent": _build_user_agent(),
     }
 
     for attempt in range(1, max_attempts + 1):
         started = perf_counter()
         try:
-            async with aiohttp.ClientSession(
-                timeout=timeout, headers=headers
-            ) as session:
-                async with session.post(
-                    upload_url,
-                    data=_build_form_data(media_bytes, filename),
-                ) as response:
-                    body = (await response.text()).strip()
-                    if response.status >= 400:
-                        raise TempMediaUploadError(
-                            f"Temp media upload failed with status {response.status}: {body}"
-                        )
-                    if not body.startswith("https://"):
-                        raise TempMediaUploadError(
-                            f"Unexpected temp media response body: {body}"
-                        )
-                    delete_token = response.headers.get("X-Token")
+            response = await asyncio.to_thread(
+                requests.post,
+                upload_url,
+                files=_build_form_data(media_bytes, filename),
+                data={"secret": ""},
+                headers=headers,
+                timeout=timeout_seconds,
+            )
+            body = response.text.strip()
+            if response.status_code >= 400:
+                raise TempMediaUploadError(
+                    f"Temp media upload failed with status {response.status_code}: {body}"
+                )
+            if not body.startswith("https://"):
+                raise TempMediaUploadError(
+                    f"Unexpected temp media response body: {body}"
+                )
+            delete_token = response.headers.get("X-Token")
         except (
-            aiohttp.ClientError,
             asyncio.TimeoutError,
+            requests.RequestException,
             TempMediaUploadError,
         ) as exc:
             duration_ms = (perf_counter() - started) * 1000
@@ -96,8 +100,8 @@ async def upload_temp_media(
                 max_attempts,
                 len(media_bytes),
                 duration_ms,
-                config.temp_media_upload_timeout,
-                exc,
+                timeout_seconds,
+                repr(exc),
             )
             if attempt >= max_attempts:
                 raise TempMediaUploadError("Temp media upload failed") from exc
@@ -132,31 +136,37 @@ async def delete_temp_media(upload_result: TempMediaUploadResult) -> None:
         )
         return
 
-    timeout = aiohttp.ClientTimeout(total=max(1, config.temp_media_upload_timeout))
+    timeout_seconds = max(1, config.temp_media_upload_timeout)
     headers = {
-        "User-Agent": config.temp_media_user_agent,
+        "User-Agent": _build_user_agent(),
     }
-    form = aiohttp.FormData()
-    form.add_field("token", upload_result.delete_token)
-    form.add_field("delete", "")
     started = perf_counter()
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.post(upload_result.url, data=form) as response:
-                response_text = (await response.text()).strip()
-                if response.status >= 400:
-                    raise TempMediaUploadError(
-                        f"Temp media delete failed with status {response.status}: {response_text}"
-                    )
-    except (aiohttp.ClientError, asyncio.TimeoutError, TempMediaUploadError) as exc:
+        response = await asyncio.to_thread(
+            requests.post,
+            upload_result.url,
+            data={"token": upload_result.delete_token, "delete": ""},
+            headers=headers,
+            timeout=timeout_seconds,
+        )
+        response_text = response.text.strip()
+        if response.status_code >= 400:
+            raise TempMediaUploadError(
+                f"Temp media delete failed with status {response.status_code}: {response_text}"
+            )
+    except (
+        asyncio.TimeoutError,
+        requests.RequestException,
+        TempMediaUploadError,
+    ) as exc:
         duration_ms = (perf_counter() - started) * 1000
         LOGGER.warning(
             "telegram.temp_media.delete.failed provider=%s key=%s duration_ms=%.3f error=%s",
             upload_result.provider,
             upload_result.key,
             duration_ms,
-            exc,
+            repr(exc),
         )
         return
 

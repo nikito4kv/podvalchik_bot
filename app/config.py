@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     temp_media_upload_url: str = "https://0x0.st"
     temp_media_upload_timeout: int = 30
     temp_media_delete_after_seconds: int = 600
-    temp_media_user_agent: str = "PodvalchikBot/1.0"
+    temp_media_user_agent: str = (
+        "PodvalchikBot/1.0 (+https://t.me/forecast_podvalchik_bot)"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
