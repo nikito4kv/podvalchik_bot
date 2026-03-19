@@ -5,9 +5,10 @@ from app.utils import temp_media
 
 
 class _FakeResponse:
-    def __init__(self, payload, status=200):
-        self._payload = payload
+    def __init__(self, body, status=200, headers=None):
+        self._body = body
         self.status = status
+        self.headers = headers or {}
 
     async def __aenter__(self):
         return self
@@ -15,8 +16,8 @@ class _FakeResponse:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def json(self, content_type=None):
-        return self._payload
+    async def text(self):
+        return self._body
 
 
 class _FakeSession:
@@ -30,19 +31,16 @@ class _FakeSession:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    def post(self, url, data, headers):
-        self.calls.append({"url": url, "data": data, "headers": headers})
+    def post(self, url, data):
+        self.calls.append({"url": url, "data": data})
         return self.response
 
 
 class TempMediaTests(unittest.IsolatedAsyncioTestCase):
-    async def test_upload_temp_media_returns_signed_url_payload(self):
+    async def test_upload_temp_media_returns_url_and_delete_token(self):
         response = _FakeResponse(
-            {
-                "key": "temp/123/file.png",
-                "url": "https://worker.example/temp-media/temp/123/file.png?sig=abc",
-                "expires_at": 123,
-            }
+            "https://0x0.st/abc123.png/leaderboard.png",
+            headers={"X-Token": "delete-token"},
         )
         session = _FakeSession(response)
 
@@ -50,11 +48,12 @@ class TempMediaTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 temp_media.config,
                 "temp_media_upload_url",
-                "https://worker.example/temp-media",
+                "https://0x0.st",
             ),
-            patch.object(temp_media.config, "temp_media_upload_token", "secret"),
             patch.object(temp_media.config, "temp_media_upload_timeout", 15),
-            patch.object(temp_media.config, "temp_media_ttl_seconds", 300),
+            patch.object(
+                temp_media.config, "temp_media_user_agent", "PodvalchikBot/1.0"
+            ),
             patch.object(temp_media.config, "tg_media_max_attempts", 1),
             patch("app.utils.temp_media.aiohttp.ClientSession", return_value=session),
         ):
@@ -63,12 +62,33 @@ class TempMediaTests(unittest.IsolatedAsyncioTestCase):
                 "stats.png",
             )
 
-        self.assertEqual(result.key, "temp/123/file.png")
+        self.assertEqual(result.key, "abc123.png/leaderboard.png")
         self.assertEqual(
             result.url,
-            "https://worker.example/temp-media/temp/123/file.png?sig=abc",
+            "https://0x0.st/abc123.png/leaderboard.png",
         )
-        self.assertEqual(result.expires_at, 123)
-        self.assertEqual(session.calls[0]["url"], "https://worker.example/temp-media")
-        self.assertEqual(session.calls[0]["headers"]["Authorization"], "Bearer secret")
-        self.assertEqual(session.calls[0]["headers"]["X-TTL-Seconds"], "300")
+        self.assertEqual(result.delete_token, "delete-token")
+        self.assertEqual(session.calls[0]["url"], "https://0x0.st")
+
+    async def test_delete_temp_media_posts_delete_token(self):
+        response = _FakeResponse("deleted")
+        session = _FakeSession(response)
+        upload_result = temp_media.TempMediaUploadResult(
+            key="abc123.png/leaderboard.png",
+            url="https://0x0.st/abc123.png/leaderboard.png",
+            delete_token="delete-token",
+        )
+
+        with (
+            patch.object(temp_media.config, "temp_media_upload_timeout", 15),
+            patch.object(
+                temp_media.config, "temp_media_user_agent", "PodvalchikBot/1.0"
+            ),
+            patch("app.utils.temp_media.aiohttp.ClientSession", return_value=session),
+        ):
+            await temp_media.delete_temp_media(upload_result)
+
+        self.assertEqual(
+            session.calls[0]["url"],
+            "https://0x0.st/abc123.png/leaderboard.png",
+        )

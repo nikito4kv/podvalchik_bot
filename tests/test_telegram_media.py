@@ -93,8 +93,10 @@ class TelegramMediaTests(unittest.IsolatedAsyncioTestCase):
         )
 
         upload_result = SimpleNamespace(
-            url="https://worker.example/temp-media/temp/123/file.png?sig=abc",
-            key="temp/123/file.png",
+            url="https://0x0.st/abc123.png/leaderboard.png",
+            key="abc123.png/leaderboard.png",
+            provider="0x0st",
+            delete_token="delete-token",
         )
 
         with (
@@ -103,6 +105,9 @@ class TelegramMediaTests(unittest.IsolatedAsyncioTestCase):
                 "app.utils.telegram_media.upload_temp_media",
                 new=AsyncMock(return_value=upload_result),
             ),
+            patch(
+                "app.utils.telegram_media.schedule_temp_media_delete"
+            ) as schedule_delete,
         ):
             await telegram_media.send_or_update_photo(
                 bot=bot,
@@ -116,9 +121,10 @@ class TelegramMediaTests(unittest.IsolatedAsyncioTestCase):
         call = bot.send_photo.await_args.kwargs
         self.assertEqual(
             call["photo"],
-            "https://worker.example/temp-media/temp/123/file.png?sig=abc",
+            "https://0x0.st/abc123.png/leaderboard.png",
         )
         bot.delete_message.assert_awaited_once_with(chat_id=55, message_id=7)
+        schedule_delete.assert_called_once_with(upload_result)
 
     async def test_send_or_update_photo_replaces_loading_message_on_temp_media_failure(
         self,

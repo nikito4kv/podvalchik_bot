@@ -15,3 +15,7 @@ __pycache__/
 *.pyd
 
 project-analysis/
+
+# Local Cloudflare tooling
+cloudflare_worker/.wrangler/
+cloudflare_worker/wrangler.toml
