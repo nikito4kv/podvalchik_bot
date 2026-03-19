@@ -1,176 +1,197 @@
-from PIL import Image, ImageDraw, ImageFont
 import io
-import os
+import logging
+from time import perf_counter
 
-# --- CONSTANTS & CONFIG ---
-WIDTH = 1200 # Wider than standard for more columns
+from PIL import Image, ImageDraw
+
+from app.utils.image_generator import _draw_logo_overlay
+from app.utils.render_assets import load_font
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+WIDTH = 1200
 MIN_HEIGHT = 600
-# Theme Colors
-BG_COLOR = (20, 24, 35)        # Dark Navy
-CARD_BG = (30, 36, 50)         # Card Background
-ACCENT_GOLD = (212, 175, 55)   # Gold
-ACCENT_CYAN = (0, 255, 255)    # Cyan
+BG_COLOR = (20, 24, 35)
+CARD_BG = (30, 36, 50)
+ACCENT_GOLD = (212, 175, 55)
+ACCENT_CYAN = (0, 255, 255)
 TEXT_WHITE = (240, 240, 240)
 TEXT_GREY = (170, 170, 180)
-BORDER_COLOR = (255, 255, 255) # White border
-ROW_ALT_COLOR = (35, 40, 60)   # Zebra striping
+ROW_ALT_COLOR = (35, 40, 60)
+
 
 def _load_fonts():
-    fonts = {}
-    try:
-        # Try loading from fonts/ directory first
-        path_bold = "fonts/arialbd.ttf"
-        path_reg = "fonts/arial.ttf"
-        
-        # Fallback for local testing if fonts are in root (optional, but good for safety)
-        if not os.path.exists(path_bold):
-             path_bold = "arialbd.ttf"
-        if not os.path.exists(path_reg):
-             path_reg = "arial.ttf"
-        
-        fonts["title"] = ImageFont.truetype(path_bold, 48)
-        fonts["header"] = ImageFont.truetype(path_bold, 24)
-        fonts["row_name"] = ImageFont.truetype(path_bold, 24)
-        fonts["row_val"] = ImageFont.truetype(path_reg, 24)
-        fonts["row_total"] = ImageFont.truetype(path_bold, 26)
-        
-    except IOError:
-        d = ImageFont.load_default()
-        return {k: d for k in ["title", "header", "row_name", "row_val", "row_total"]}
-    return fonts
+    return {
+        "title": load_font("arialbd.ttf", 48, "season_detail.title"),
+        "header": load_font("arialbd.ttf", 24, "season_detail.header"),
+        "row_name": load_font("arialbd.ttf", 24, "season_detail.row_name"),
+        "row_val": load_font("arial.ttf", 24, "season_detail.row_val"),
+        "row_total": load_font("arialbd.ttf", 26, "season_detail.row_total"),
+    }
 
-def generate_detailed_season_image(season_title: str, columns: list, rows: list) -> io.BytesIO:
-    """
-    columns: list of tournament names (strings)
-    rows: list of dicts {'name': str, 'scores': [int, int...], 'total': int}
-          scores length must match columns length.
-    """
-    
-    # Calculate dynamic width/height
-    # Base layout:
-    # Name column: 250px
-    # Data columns: 100px each
-    # Total column: 100px
-    
-    NAME_COL_WIDTH = 250
-    DATA_COL_WIDTH = 100
-    TOTAL_COL_WIDTH = 100
-    PADDING = 20
-    TABLE_TOP = 100
-    HEADER_HEIGHT = 150
-    ROW_HEIGHT = 50
-    
-    num_data_cols = len(columns)
-    calculated_width = NAME_COL_WIDTH + (num_data_cols * DATA_COL_WIDTH) + TOTAL_COL_WIDTH + (PADDING * 2)
-    final_width = max(WIDTH, calculated_width)
-    
-    final_height = TABLE_TOP + HEADER_HEIGHT + (len(rows) * ROW_HEIGHT) + PADDING + 20
-    
-    img = Image.new('RGBA', (final_width, final_height), color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    fonts = _load_fonts()
-    
-    # 1. Title
-    draw.text((final_width // 2, 40), season_title, font=fonts["title"], fill=TEXT_WHITE, anchor="mm")
-    
-    # 2. Table Header
-    # Draw header background
-    draw.rectangle([(PADDING, TABLE_TOP), (final_width - PADDING, TABLE_TOP + HEADER_HEIGHT)], fill=CARD_BG)
-    
-    # Name Header (Horizontal)
-    curr_x = PADDING + 10
-    draw.text((curr_x, TABLE_TOP + HEADER_HEIGHT - 30), "Игрок", font=fonts["header"], fill=ACCENT_GOLD, anchor="lm")
-    
-    curr_x += NAME_COL_WIDTH
-    
-    # Tournament Headers (Horizontal with Wrap)
-    for col_name in columns:
-        # Wrap text logic
-        words = col_name.split()
-        lines = []
-        current_line = []
-        
-        for word in words:
-            test_line = ' '.join(current_line + [word])
-            bbox = draw.textbbox((0, 0), test_line, font=fonts["header"])
-            w = bbox[2] - bbox[0]
-            if w <= (DATA_COL_WIDTH - 5): # 5px padding
-                current_line.append(word)
-            else:
+
+def generate_detailed_season_image(
+    season_title: str, columns: list, rows: list
+) -> io.BytesIO:
+    started = perf_counter()
+    try:
+        name_col_width = 250
+        data_col_width = 100
+        total_col_width = 100
+        padding = 20
+        table_top = 100
+        header_height = 150
+        row_height = 50
+
+        calculated_width = (
+            name_col_width
+            + (len(columns) * data_col_width)
+            + total_col_width
+            + (padding * 2)
+        )
+        final_width = max(WIDTH, calculated_width)
+        final_height = max(
+            MIN_HEIGHT,
+            table_top + header_height + (len(rows) * row_height) + padding + 20,
+        )
+
+        img = Image.new("RGBA", (final_width, final_height), color=BG_COLOR)
+        draw = ImageDraw.Draw(img)
+        fonts = _load_fonts()
+
+        draw.text(
+            (final_width // 2, 40),
+            season_title,
+            font=fonts["title"],
+            fill=TEXT_WHITE,
+            anchor="mm",
+        )
+        draw.rectangle(
+            [(padding, table_top), (final_width - padding, table_top + header_height)],
+            fill=CARD_BG,
+        )
+
+        curr_x = padding + 10
+        draw.text(
+            (curr_x, table_top + header_height - 30),
+            "Игрок",
+            font=fonts["header"],
+            fill=ACCENT_GOLD,
+            anchor="lm",
+        )
+        curr_x += name_col_width
+
+        for column_name in columns:
+            words = column_name.split()
+            lines = []
+            current_line = []
+            for word in words:
+                test_line = " ".join(current_line + [word])
+                bbox = draw.textbbox((0, 0), test_line, font=fonts["header"])
+                width = bbox[2] - bbox[0]
+                if width <= (data_col_width - 5):
+                    current_line.append(word)
+                    continue
                 if current_line:
-                    lines.append(' '.join(current_line))
+                    lines.append(" ".join(current_line))
                     current_line = [word]
                 else:
-                    # Single word is too long, force split or just add it (it will overflow slightly but better than empty)
                     lines.append(word)
-                    current_line = []
-        if current_line:
-            lines.append(' '.join(current_line))
-            
-        # Draw lines from bottom up or top down? 
-        # Let's draw bottom aligned to match other headers
-        
-        # Calculate total block height
-        line_height = 0
-        if lines:
-             bbox = draw.textbbox((0, 0), "Aj", font=fonts["header"])
-             line_height = bbox[3] - bbox[1] + 5 # +5 line spacing
-             
-        total_text_h = len(lines) * line_height
-        
-        # Start Y position
-        # TABLE_TOP + HEADER_HEIGHT is bottom of header box
-        # - 20 padding
-        # - total_text_h
-        start_y = (TABLE_TOP + HEADER_HEIGHT - 20) - total_text_h + line_height
-        
-        for i, line in enumerate(lines):
-            draw.text((curr_x + DATA_COL_WIDTH//2, start_y + (i * line_height)), line, font=fonts["header"], fill=ACCENT_GOLD, anchor="ms") # ms = middle baseline
-        
-        curr_x += DATA_COL_WIDTH
-        
-    # Total Header
-    draw.text((curr_x + TOTAL_COL_WIDTH//2, TABLE_TOP + HEADER_HEIGHT - 30), "ИТОГ", font=fonts["header"], fill=ACCENT_GOLD, anchor="mm")
-    
-    # 3. Rows
-    y = TABLE_TOP + HEADER_HEIGHT
-    
-    for i, row in enumerate(rows):
-        row_center_y = y + ROW_HEIGHT // 2
-        
-        # Zebra
-        if i % 2 == 1:
-            draw.rectangle([(PADDING, y), (final_width - PADDING, y + ROW_HEIGHT)], fill=ROW_ALT_COLOR)
-            
-        # Name
-        curr_x = PADDING + 10
-        draw.text((curr_x, row_center_y), row['name'], font=fonts["row_name"], fill=TEXT_WHITE, anchor="lm")
-        curr_x += NAME_COL_WIDTH
-        
-        # Scores
-        for score in row['scores']:
-            val_str = str(score) if score is not None else "-"
-            color = TEXT_WHITE if score is not None else TEXT_GREY
-            if score == 0: color = TEXT_GREY
-            
-            draw.text((curr_x + DATA_COL_WIDTH//2, row_center_y), val_str, font=fonts["row_val"], fill=color, anchor="mm")
-            curr_x += DATA_COL_WIDTH
-            
-        # Total
-        draw.text((curr_x + TOTAL_COL_WIDTH//2, row_center_y), str(row['total']), font=fonts["row_total"], fill=ACCENT_CYAN, anchor="mm")
-        
-        # Separator
-        draw.line([(PADDING, y + ROW_HEIGHT), (final_width - PADDING, y + ROW_HEIGHT)], fill=(255,255,255,30), width=1)
-        
-        y += ROW_HEIGHT
+            if current_line:
+                lines.append(" ".join(current_line))
 
-    # Overlay Logo
-    from app.utils.image_generator import _draw_logo_overlay
-    visual_center_y = (TABLE_TOP + (final_height - 20)) // 2
-    _draw_logo_overlay(img, opacity=0.10, center_y=visual_center_y)
+            bbox = draw.textbbox((0, 0), "Aj", font=fonts["header"])
+            line_height = (bbox[3] - bbox[1]) + 5
+            total_text_height = len(lines) * line_height
+            start_y = (table_top + header_height - 20) - total_text_height + line_height
+            for index, line in enumerate(lines):
+                draw.text(
+                    (curr_x + data_col_width // 2, start_y + (index * line_height)),
+                    line,
+                    font=fonts["header"],
+                    fill=ACCENT_GOLD,
+                    anchor="ms",
+                )
+            curr_x += data_col_width
 
-    # Save
-    bio = io.BytesIO()
-    img.save(bio, format='PNG')
-    bio.seek(0)
+        draw.text(
+            (curr_x + total_col_width // 2, table_top + header_height - 30),
+            "ИТОГ",
+            font=fonts["header"],
+            fill=ACCENT_GOLD,
+            anchor="mm",
+        )
+
+        y = table_top + header_height
+        for index, row in enumerate(rows):
+            row_center_y = y + row_height // 2
+            if index % 2 == 1:
+                draw.rectangle(
+                    [(padding, y), (final_width - padding, y + row_height)],
+                    fill=ROW_ALT_COLOR,
+                )
+
+            curr_x = padding + 10
+            draw.text(
+                (curr_x, row_center_y),
+                row["name"],
+                font=fonts["row_name"],
+                fill=TEXT_WHITE,
+                anchor="lm",
+            )
+            curr_x += name_col_width
+
+            for score in row["scores"]:
+                value = str(score) if score is not None else "-"
+                color = TEXT_WHITE if score is not None else TEXT_GREY
+                if score == 0:
+                    color = TEXT_GREY
+                draw.text(
+                    (curr_x + data_col_width // 2, row_center_y),
+                    value,
+                    font=fonts["row_val"],
+                    fill=color,
+                    anchor="mm",
+                )
+                curr_x += data_col_width
+
+            draw.text(
+                (curr_x + total_col_width // 2, row_center_y),
+                str(row["total"]),
+                font=fonts["row_total"],
+                fill=ACCENT_CYAN,
+                anchor="mm",
+            )
+            draw.line(
+                [(padding, y + row_height), (final_width - padding, y + row_height)],
+                fill=(255, 255, 255, 30),
+                width=1,
+            )
+            y += row_height
+
+        visual_center_y = (table_top + (final_height - 20)) // 2
+        _draw_logo_overlay(img, opacity=0.10, center_y=visual_center_y)
+
+        bio = io.BytesIO()
+        img.convert("RGB").save(bio, format="PNG")
+        bio.seek(0)
+    except Exception:
+        LOGGER.exception(
+            "render.season_detail.failed title=%s columns=%s rows=%s",
+            season_title,
+            len(columns),
+            len(rows),
+        )
+        raise
+
+    duration_ms = (perf_counter() - started) * 1000
+    LOGGER.info(
+        "render.season_detail.complete title=%s columns=%s rows=%s duration_ms=%.3f",
+        season_title,
+        len(columns),
+        len(rows),
+        duration_ms,
+    )
     return bio

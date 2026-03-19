@@ -16,6 +16,7 @@ from app.db.session import init_db
 from app.handlers import (
     common,
     admin,
+    stats,
     prediction,
     tournament_management,
     pagination,
@@ -86,6 +87,7 @@ async def main():
     dp.include_router(player_management.router)
     dp.include_router(pagination.router)
     dp.include_router(prediction.router)
+    dp.include_router(stats.router)
     dp.include_router(common.router)
 
     # Инициализируем базу данных
