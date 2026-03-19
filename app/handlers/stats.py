@@ -5,7 +5,7 @@ from time import perf_counter
 
 from aiogram import Bot, F, Router, types
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
@@ -33,10 +33,26 @@ from app.utils.leaderboard_data import (
     build_detailed_season_snapshot,
 )
 from app.utils.stats_calculator import calculate_user_tournament_streaks
+from app.utils.telegram_media import send_or_update_photo
 
 
 LOGGER = logging.getLogger(__name__)
 router = Router()
+
+
+async def render_photo_bytes(renderer, *args, filename: str) -> tuple[bytes, float]:
+    started = perf_counter()
+    img_buffer = await asyncio.to_thread(renderer, *args)
+    photo_bytes = img_buffer.getvalue()
+    render_ms = (perf_counter() - started) * 1000
+    LOGGER.info(
+        "stats.image.render.complete renderer=%s filename=%s size_bytes=%s duration_ms=%.3f",
+        renderer.__name__,
+        filename,
+        len(photo_bytes),
+        render_ms,
+    )
+    return photo_bytes, render_ms
 
 
 def leaderboard_kb(current_view: str = "season"):
@@ -219,25 +235,30 @@ async def handle_my_stats(message: types.Message):
         LOGGER.warning("stats.request.user_missing user_id=%s", message.from_user.id)
         return
 
-    render_started = perf_counter()
-    img_buffer = generate_user_profile_image(user_data)
-    render_ms = (perf_counter() - render_started) * 1000
-    photo = BufferedInputFile(img_buffer.read(), filename="my_stats.png")
+    photo_bytes, render_ms = await render_photo_bytes(
+        generate_user_profile_image,
+        user_data,
+        filename="my_stats.png",
+    )
 
-    await loading_message.delete()
-    await message.answer_photo(
-        photo,
+    await send_or_update_photo(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        photo_bytes=photo_bytes,
+        filename="my_stats.png",
         caption=f"📊 Статистика игрока <b>{message.from_user.full_name}</b>",
+        message_to_edit=loading_message,
     )
 
     duration_ms = (perf_counter() - started) * 1000
     LOGGER.info(
-        "stats.request.complete user_id=%s duration_ms=%.3f db_writes=0 current_streak=%s max_streak=%s render_ms=%.3f",
+        "stats.request.complete user_id=%s duration_ms=%.3f db_writes=0 current_streak=%s max_streak=%s render_ms=%.3f image_size_bytes=%s",
         message.from_user.id,
         duration_ms,
         user_data["current_streak"],
         user_data["max_streak"],
         render_ms,
+        len(photo_bytes),
     )
 
 
@@ -248,37 +269,21 @@ async def handle_leaderboard(message: types.Message):
 
 async def send_leaderboard_image(
     chat_id: int,
-    photo: BufferedInputFile,
+    photo_bytes: bytes,
+    filename: str,
     caption: str,
     reply_markup: types.InlineKeyboardMarkup,
     bot: Bot,
     message_to_edit: types.Message | None = None,
 ):
-    if message_to_edit and message_to_edit.content_type == types.ContentType.PHOTO:
-        await bot.edit_message_media(
-            chat_id=chat_id,
-            message_id=message_to_edit.message_id,
-            media=types.InputMediaPhoto(
-                media=photo, caption=caption, parse_mode="HTML"
-            ),
-            reply_markup=reply_markup,
-        )
-        return
-
-    if message_to_edit:
-        try:
-            await bot.delete_message(
-                chat_id=chat_id, message_id=message_to_edit.message_id
-            )
-        except Exception as exc:
-            LOGGER.warning("Failed to delete loading message: %s", exc)
-
-    await bot.send_photo(
+    await send_or_update_photo(
+        bot=bot,
         chat_id=chat_id,
-        photo=photo,
+        photo_bytes=photo_bytes,
+        filename=filename,
         caption=caption,
         reply_markup=reply_markup,
-        parse_mode="HTML",
+        message_to_edit=message_to_edit,
     )
 
 
@@ -351,8 +356,12 @@ async def show_seasonal_leaderboard(message_or_cb: types.Message | types.Callbac
                     }
                 )
 
-    img_buffer = generate_leaderboard_image(f"СЕЗОН #{season_number}", leaders_data)
-    photo = BufferedInputFile(img_buffer.read(), filename="season_top.png")
+    photo_bytes, _ = await render_photo_bytes(
+        generate_leaderboard_image,
+        f"СЕЗОН #{season_number}",
+        leaders_data,
+        filename="season_top.png",
+    )
     caption_breadcrumbs = format_breadcrumbs(
         ["Главная", "Рейтинг клуба", "Текущий сезон"]
     )
@@ -364,7 +373,8 @@ async def show_seasonal_leaderboard(message_or_cb: types.Message | types.Callbac
     )
     await send_leaderboard_image(
         chat_id=chat_id,
-        photo=photo,
+        photo_bytes=photo_bytes,
+        filename="season_top.png",
         caption=caption,
         reply_markup=leaderboard_kb("season"),
         bot=bot_instance,
@@ -422,8 +432,12 @@ async def cq_leaderboard_global(callback: types.CallbackQuery):
             }
         )
 
-    img_buffer = generate_leaderboard_image("ЗА ВСЕ ВРЕМЯ", leaders_data)
-    photo = BufferedInputFile(img_buffer.read(), filename="global_top.png")
+    photo_bytes, _ = await render_photo_bytes(
+        generate_leaderboard_image,
+        "ЗА ВСЕ ВРЕМЯ",
+        leaders_data,
+        filename="global_top.png",
+    )
     caption_breadcrumbs = format_breadcrumbs(
         ["Главная", "Рейтинг клуба", "За все время"]
     )
@@ -433,7 +447,8 @@ async def cq_leaderboard_global(callback: types.CallbackQuery):
     )
     await send_leaderboard_image(
         chat_id=chat_id,
-        photo=photo,
+        photo_bytes=photo_bytes,
+        filename="global_top.png",
         caption=caption,
         reply_markup=leaderboard_kb("global"),
         bot=bot_instance,
@@ -541,8 +556,13 @@ async def cq_leaderboard_history_view(callback: types.CallbackQuery):
             }
         )
 
-    img_buffer = generate_leaderboard_image(f"СЕЗОН #{season.number}", leaders_data)
-    photo = BufferedInputFile(img_buffer.read(), filename=f"season_{season.number}.png")
+    filename = f"season_{season.number}.png"
+    photo_bytes, _ = await render_photo_bytes(
+        generate_leaderboard_image,
+        f"СЕЗОН #{season.number}",
+        leaders_data,
+        filename=filename,
+    )
     caption_breadcrumbs = format_breadcrumbs(
         ["Главная", "Рейтинг клуба", "История сезонов", f"Сезон #{season.number}"]
     )
@@ -562,7 +582,8 @@ async def cq_leaderboard_history_view(callback: types.CallbackQuery):
 
     await send_leaderboard_image(
         chat_id=chat_id,
-        photo=photo,
+        photo_bytes=photo_bytes,
+        filename=filename,
         caption=caption,
         reply_markup=builder.as_markup(),
         bot=bot_instance,
@@ -611,10 +632,13 @@ async def generate_and_send_daily_stats(
             await bot_instance.send_message(chat_id, text, reply_markup=kb)
         return
 
-    img_buffer = generate_leaderboard_image(
-        f"РЕЙТИНГ {target_date.strftime('%d.%m')}", snapshot["leaders"]
+    filename = f"daily_{target_date}.png"
+    photo_bytes, _ = await render_photo_bytes(
+        generate_leaderboard_image,
+        f"РЕЙТИНГ {target_date.strftime('%d.%m')}",
+        snapshot["leaders"],
+        filename=filename,
     )
-    photo = BufferedInputFile(img_buffer.read(), filename=f"daily_{target_date}.png")
     caption_breadcrumbs = format_breadcrumbs(
         ["Главная", "Рейтинг клуба", "Рейтинг дня"]
     )
@@ -627,7 +651,8 @@ async def generate_and_send_daily_stats(
 
     await send_leaderboard_image(
         chat_id=chat_id,
-        photo=photo,
+        photo_bytes=photo_bytes,
+        filename=filename,
         caption=caption,
         reply_markup=kb,
         bot=bot_instance,
@@ -777,14 +802,13 @@ async def cq_leaderboard_history_detailed(callback: types.CallbackQuery):
         f"{season.start_date.day}.{season.start_date.month} - "
         f"{season.end_date.day}.{season.end_date.month}"
     )
-    img_buffer = await asyncio.to_thread(
+    filename = f"season_{season.number}_detailed.png"
+    photo_bytes, _ = await render_photo_bytes(
         generate_detailed_season_image,
         f"Сезон {season.number} ({title_dates})",
         snapshot["columns"],
         snapshot["rows"],
-    )
-    photo = BufferedInputFile(
-        img_buffer.read(), filename=f"season_{season.number}_detailed.png"
+        filename=filename,
     )
     builder = InlineKeyboardBuilder()
     builder.button(
@@ -792,7 +816,8 @@ async def cq_leaderboard_history_detailed(callback: types.CallbackQuery):
     )
     await send_leaderboard_image(
         chat_id=chat_id,
-        photo=photo,
+        photo_bytes=photo_bytes,
+        filename=filename,
         caption=f"<b>Детальная статистика сезона #{season.number}</b>",
         reply_markup=builder.as_markup(),
         bot=bot_instance,
