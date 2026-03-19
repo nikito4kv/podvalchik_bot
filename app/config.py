@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     tg_media_request_timeout: int = 180
     tg_media_max_attempts: int = 2
     tg_media_retry_backoff_seconds: float = 1.5
+    temp_media_enabled: bool = False
+    temp_media_upload_url: Optional[str] = None
+    temp_media_upload_token: Optional[str] = None
+    temp_media_ttl_seconds: int = 300
+    temp_media_upload_timeout: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

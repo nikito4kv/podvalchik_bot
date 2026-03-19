@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 from aiogram import types
@@ -30,6 +31,7 @@ class TelegramMediaTests(unittest.IsolatedAsyncioTestCase):
             patch.object(telegram_media.config, "tg_media_request_timeout", 123),
             patch.object(telegram_media.config, "tg_media_max_attempts", 2),
             patch.object(telegram_media.config, "tg_media_retry_backoff_seconds", 0),
+            patch.object(telegram_media.config, "temp_media_enabled", False),
             patch("app.utils.telegram_media.asyncio.sleep", new=AsyncMock()),
         ):
             result = await telegram_media.send_or_update_photo(
@@ -38,7 +40,7 @@ class TelegramMediaTests(unittest.IsolatedAsyncioTestCase):
                 photo_bytes=b"png-bytes",
                 filename="stats.png",
                 caption="caption",
-                message_to_edit=loading_message,
+                message_to_edit=cast(types.Message, loading_message),
             )
 
         self.assertIs(result, sent_message)
@@ -67,7 +69,7 @@ class TelegramMediaTests(unittest.IsolatedAsyncioTestCase):
                 filename="leaderboard.png",
                 caption="<b>caption</b>",
                 reply_markup=None,
-                message_to_edit=photo_message,
+                message_to_edit=cast(types.Message, photo_message),
             )
 
         self.assertTrue(result)
@@ -80,3 +82,71 @@ class TelegramMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(edit_call["request_timeout"], 150)
         self.assertEqual(edit_call["media"].caption, "<b>caption</b>")
         self.assertEqual(edit_call["media"].media.filename, "leaderboard.png")
+
+    async def test_send_or_update_photo_uses_temp_media_url_when_enabled(self):
+        bot = AsyncMock()
+        bot.send_photo = AsyncMock(return_value=True)
+        bot.delete_message = AsyncMock()
+        loading_message = SimpleNamespace(
+            content_type=types.ContentType.TEXT,
+            message_id=7,
+        )
+
+        upload_result = SimpleNamespace(
+            url="https://worker.example/temp-media/temp/123/file.png?sig=abc",
+            key="temp/123/file.png",
+        )
+
+        with (
+            patch.object(telegram_media.config, "temp_media_enabled", True),
+            patch(
+                "app.utils.telegram_media.upload_temp_media",
+                new=AsyncMock(return_value=upload_result),
+            ),
+        ):
+            await telegram_media.send_or_update_photo(
+                bot=bot,
+                chat_id=55,
+                photo_bytes=b"leaderboard",
+                filename="leaderboard.png",
+                caption="caption",
+                message_to_edit=cast(types.Message, loading_message),
+            )
+
+        call = bot.send_photo.await_args.kwargs
+        self.assertEqual(
+            call["photo"],
+            "https://worker.example/temp-media/temp/123/file.png?sig=abc",
+        )
+        bot.delete_message.assert_awaited_once_with(chat_id=55, message_id=7)
+
+    async def test_send_or_update_photo_replaces_loading_message_on_temp_media_failure(
+        self,
+    ):
+        bot = AsyncMock()
+        loading_message = SimpleNamespace(
+            content_type=types.ContentType.TEXT,
+            message_id=99,
+            edit_text=AsyncMock(),
+        )
+
+        with (
+            patch.object(telegram_media.config, "temp_media_enabled", True),
+            patch(
+                "app.utils.telegram_media.upload_temp_media",
+                new=AsyncMock(
+                    side_effect=telegram_media.TempMediaUploadError("upload failed")
+                ),
+            ),
+        ):
+            with self.assertRaises(telegram_media.TempMediaUploadError):
+                await telegram_media.send_or_update_photo(
+                    bot=bot,
+                    chat_id=55,
+                    photo_bytes=b"leaderboard",
+                    filename="leaderboard.png",
+                    caption="caption",
+                    message_to_edit=cast(types.Message, loading_message),
+                )
+
+        loading_message.edit_text.assert_awaited_once()
