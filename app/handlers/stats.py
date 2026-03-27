@@ -83,9 +83,13 @@ async def answer_callback_safe(callback: types.CallbackQuery, *args, **kwargs) -
 
 def require_message(callback: types.CallbackQuery) -> types.Message:
     message = callback.message
-    if not isinstance(message, types.Message):
+    if message is None:
         raise RuntimeError("Callback message is unavailable")
-    return message
+    if isinstance(message, types.InaccessibleMessage):
+        raise RuntimeError("Callback message is inaccessible")
+    if not hasattr(message, "chat") or not hasattr(message, "answer"):
+        raise RuntimeError("Callback message is unavailable")
+    return cast(types.Message, message)
 
 
 def require_bot(bot: Bot | None) -> Bot:

@@ -11,10 +11,25 @@ from app.handlers.stats import (
     daily_date_selection_kb,
     leaderboard_daily_modes_kb,
     leaderboard_kb,
+    require_message,
 )
 
 
 class StatsHandlerTests(unittest.IsolatedAsyncioTestCase):
+    def test_require_message_accepts_usable_message_like_object(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=1), answer=AsyncMock())
+        callback = SimpleNamespace(message=message)
+
+        resolved = require_message(cast(types.CallbackQuery, callback))
+
+        self.assertIs(resolved, message)
+
+    def test_require_message_rejects_missing_message(self):
+        callback = SimpleNamespace(message=None)
+
+        with self.assertRaises(RuntimeError):
+            require_message(cast(types.CallbackQuery, callback))
+
     async def test_answer_callback_safe_ignores_expired_query(self):
         callback = SimpleNamespace(
             answer=AsyncMock(
