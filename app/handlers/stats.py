@@ -5,6 +5,7 @@ from time import perf_counter
 from typing import cast
 
 from aiogram import Bot, F, Router, types
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -54,6 +55,32 @@ async def delete_message_safe(bot: Bot, chat_id: int, message_id: int):
         )
 
 
+async def answer_callback_safe(callback: types.CallbackQuery, *args, **kwargs) -> bool:
+    try:
+        await callback.answer(*args, **kwargs)
+        return True
+    except TelegramBadRequest as exc:
+        error_text = str(exc).lower()
+        if "query is too old" in error_text or "query id is invalid" in error_text:
+            LOGGER.info(
+                "stats.callback.answer_skipped callback_data=%s error=%s",
+                callback.data,
+                exc,
+            )
+            return False
+        raise
+    except TelegramNetworkError as exc:
+        error_text = str(exc).lower()
+        if "timeout" not in error_text:
+            raise
+        LOGGER.warning(
+            "stats.callback.answer_failed callback_data=%s error=%s",
+            callback.data,
+            exc,
+        )
+        return False
+
+
 def require_message(callback: types.CallbackQuery) -> types.Message:
     message = callback.message
     if not isinstance(message, types.Message):
@@ -78,23 +105,8 @@ async def prepare_loading_message(
     message_or_cb: types.Message | types.CallbackQuery, loading_text: str
 ) -> types.Message:
     if isinstance(message_or_cb, types.CallbackQuery):
-        await message_or_cb.answer()
-        source_message = require_message(message_or_cb)
-        bot = require_bot(message_or_cb.bot)
-        if source_message.content_type == types.ContentType.TEXT:
-            await source_message.edit_text(loading_text, reply_markup=None)
-            return source_message
-
-        loading_message = await bot.send_message(
-            source_message.chat.id,
-            loading_text,
-        )
-        await delete_message_safe(
-            bot,
-            source_message.chat.id,
-            source_message.message_id,
-        )
-        return loading_message
+        await answer_callback_safe(message_or_cb)
+        return require_message(message_or_cb)
 
     return await message_or_cb.answer(loading_text)
 
@@ -355,13 +367,9 @@ async def handle_my_stats(message: types.Message):
     if from_user is None:
         return
 
-    loading_message = await message.answer("⏳ Собираю статистику...")
-
     user_data = await build_user_profile_data(from_user.id, from_user.full_name)
     if user_data is None:
-        await loading_message.edit_text(
-            "Не удалось найти вашу статистику. Попробуйте /start"
-        )
+        await message.answer("Не удалось найти вашу статистику. Попробуйте /start")
         LOGGER.warning("stats.request.user_missing user_id=%s", from_user.id)
         return
 
@@ -375,7 +383,6 @@ async def handle_my_stats(message: types.Message):
         bot=require_bot(message.bot),
         chat_id=message.chat.id,
         text=text,
-        message_to_edit=loading_message,
     )
 
     duration_ms = (perf_counter() - started) * 1000
@@ -530,13 +537,13 @@ async def cq_leaderboard_global(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "leaderboard:history:list")
 async def cq_leaderboard_history_list(callback: types.CallbackQuery):
-    await callback.answer()
+    await answer_callback_safe(callback)
     await show_history_list(callback, page=0)
 
 
 @router.callback_query(F.data.startswith("leaderboard:history:page:"))
 async def cq_leaderboard_history_page(callback: types.CallbackQuery):
-    await callback.answer()
+    await answer_callback_safe(callback)
     callback_data = require_callback_data(callback)
     await show_history_list(callback, int(callback_data.split(":")[-1]))
 
@@ -758,7 +765,7 @@ async def cq_daily_yesterday(callback: types.CallbackQuery):
 @router.callback_query(F.data == "leaderboard:daily:select")
 async def cq_daily_select(callback: types.CallbackQuery, state: FSMContext):
     message = require_message(callback)
-    await callback.answer()
+    await answer_callback_safe(callback)
     text = (
         f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня'])}\n\n"
         "📅 Выберите день или введите дату вручную:"
@@ -788,7 +795,7 @@ async def cq_daily_date_picked(callback: types.CallbackQuery):
 @router.callback_query(F.data == "leaderboard:daily:date_input_manual")
 async def cq_daily_date_input_manual(callback: types.CallbackQuery, state: FSMContext):
     message = require_message(callback)
-    await callback.answer()
+    await answer_callback_safe(callback)
     text = (
         f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня', 'Ввод даты'])}\n\n"
         "✍️ Введите дату в формате <b>ДД.ММ.ГГГГ</b> (например, 13.12.2025):"
@@ -836,7 +843,7 @@ async def process_date_input(message: types.Message, state: FSMContext):
 async def cancel_date_input(callback: types.CallbackQuery, state: FSMContext):
     message = require_message(callback)
     await state.clear()
-    await callback.answer("Ввод отменен")
+    await answer_callback_safe(callback, "Ввод отменен")
     await message.edit_text(
         (
             f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня'])}\n\n"
