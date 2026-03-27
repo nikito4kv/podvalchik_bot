@@ -195,6 +195,16 @@ def build_detailed_season_text(
 def leaderboard_kb(current_view: str = "season"):
     builder = InlineKeyboardBuilder()
 
+    if current_view == "menu":
+        builder.button(text="📅 Текущий сезон", callback_data="leaderboard:season")
+        builder.button(text="🌍 За все время", callback_data="leaderboard:global")
+        builder.button(text="📆 Рейтинг дня", callback_data="leaderboard:daily:menu")
+        builder.button(
+            text="📜 История сезонов", callback_data="leaderboard:history:list"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+
     if current_view == "season":
         builder.button(text="🌍 За все время", callback_data="leaderboard:global")
         builder.button(text="📆 Рейтинг дня", callback_data="leaderboard:daily:menu")
@@ -208,6 +218,7 @@ def leaderboard_kb(current_view: str = "season"):
             text="📜 История сезонов", callback_data="leaderboard:history:list"
         )
 
+    builder.button(text="↩️ К выбору рейтинга", callback_data="leaderboard:menu")
     builder.adjust(2)
     return builder.as_markup()
 
@@ -241,7 +252,9 @@ def daily_date_selection_kb():
             callback_data="leaderboard:daily:date_input_manual",
         )
     )
-    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="fsm_cancel"))
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="leaderboard:daily:menu")
+    )
     builder.adjust(1)
     return builder.as_markup()
 
@@ -259,7 +272,7 @@ def leaderboard_daily_modes_kb(viewing_mode: str = "other"):
         )
 
     builder.button(text="📆 Выбрать дату", callback_data="leaderboard:daily:select")
-    builder.button(text="↩️ Назад к сезону", callback_data="leaderboard:season")
+    builder.button(text="↩️ К выбору рейтинга", callback_data="leaderboard:menu")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -297,7 +310,7 @@ def season_history_kb(seasons: list, page: int = 0):
         builder.row(*nav_buttons)
     builder.row(
         types.InlineKeyboardButton(
-            text="↩️ Назад к рейтингу", callback_data="leaderboard:season"
+            text="↩️ Назад к рейтингу", callback_data="leaderboard:menu"
         )
     )
     return builder.as_markup()
@@ -397,7 +410,40 @@ async def handle_my_stats(message: types.Message):
 
 @router.message(F.text == "🏆 Рейтинг клуба")
 async def handle_leaderboard(message: types.Message):
-    await show_seasonal_leaderboard(message)
+    await show_leaderboard_menu(message)
+
+
+async def show_leaderboard_menu(
+    message_or_cb: types.Message | types.CallbackQuery,
+) -> None:
+    is_callback = isinstance(message_or_cb, types.CallbackQuery)
+    bot_instance = require_bot(message_or_cb.bot)
+    if is_callback:
+        source_message = require_message(message_or_cb)
+        chat_id = source_message.chat.id
+        target_message = source_message
+        await answer_callback_safe(message_or_cb)
+    else:
+        chat_id = message_or_cb.chat.id
+        target_message = None
+
+    text = (
+        f"{format_breadcrumbs(['Главная', 'Рейтинг клуба'])}\n\n"
+        "<b>🏆 Рейтинг клуба</b>\n"
+        "Выберите, какой рейтинг хотите посмотреть:"
+    )
+    await send_or_update_text(
+        bot=bot_instance,
+        chat_id=chat_id,
+        text=text,
+        reply_markup=leaderboard_kb("menu"),
+        message_to_edit=target_message,
+    )
+
+
+@router.callback_query(F.data == "leaderboard:menu")
+async def cq_leaderboard_menu(callback: types.CallbackQuery):
+    await show_leaderboard_menu(callback)
 
 
 async def show_seasonal_leaderboard(message_or_cb: types.Message | types.CallbackQuery):
@@ -671,7 +717,20 @@ async def cq_leaderboard_history_view(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "leaderboard:daily:menu")
 async def cq_leaderboard_daily_menu(callback: types.CallbackQuery):
-    await cq_daily_today(callback)
+    await answer_callback_safe(callback)
+    message = require_message(callback)
+    text = (
+        f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня'])}\n\n"
+        "<b>📆 Рейтинг дня</b>\n"
+        "Выберите, за какой день вы хотите посмотреть статистику:"
+    )
+    await send_or_update_text(
+        bot=require_bot(callback.bot),
+        chat_id=message.chat.id,
+        text=text,
+        reply_markup=leaderboard_daily_modes_kb(),
+        message_to_edit=message,
+    )
 
 
 async def generate_and_send_daily_stats(
