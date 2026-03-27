@@ -1,9 +1,7 @@
-import logging
-import html
 from aiogram import Router, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardButton
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from app.keyboards.reply import main_menu
@@ -18,8 +16,13 @@ from app.keyboards.inline import (
 )
 from app.db.models import User, Tournament, Forecast, TournamentStatus, Player
 from app.db.session import async_session
-from app.utils.formatting import get_medal_str, format_breadcrumbs
+from app.utils.formatting import format_breadcrumbs
 from app.config import config
+from app.handlers.render_helpers import (
+    build_forecast_card_text,
+    build_history_details_text,
+    get_forecast_view_flags,
+)
 
 router = Router()
 
@@ -228,39 +231,21 @@ async def show_specific_forecast(callback_query: types.CallbackQuery):  # ADDED 
         result = await session.execute(players_stmt)
         players_map = {p.id: p for p in result.scalars()}
 
-        # Format the message
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
-        t_name = html.escape(forecast.tournament.name)
-        text = f"<b>Ваш прогноз на турнир «{t_name}» от {tournament_date}:</b>\n\n"
-
-        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-        for i, player_id in enumerate(player_ids):
-            place = medals.get(i, f" {i + 1}.")
-            player = players_map.get(player_id)
-            if player:
-                rating_str = (
-                    f" ({player.current_rating})"
-                    if player.current_rating is not None
-                    else ""
-                )
-                name_str = f"{html.escape(player.full_name)}{rating_str}"
-            else:
-                name_str = "Неизвестный игрок"
-            text += f"{place} {name_str}\n"
-
-        # Show 'Edit' button only for OPEN tournaments
-        allow_edit = forecast.tournament.status == TournamentStatus.OPEN
-
-        # Show 'Other Forecasts' only if NOT OPEN or if admin (based on rules from tournament_user_menu_kb)
-        is_admin = user_id in config.admin_ids
-        status_str = (
-            forecast.tournament.status.name
-            if hasattr(forecast.tournament.status, "name")
-            else str(forecast.tournament.status)
+        text = build_forecast_card_text(
+            tournament_name=forecast.tournament.name,
+            tournament_date_str=tournament_date,
+            player_ids=player_ids,
+            players_map=players_map,
+            escape_html=True,
         )
-        _show_others = (
-            status_str != "OPEN"
-        ) or is_admin  # Recalc as it's passed directly
+
+        admin_ids = config.admin_ids if isinstance(config.admin_ids, list) else []
+        allow_edit, is_admin, _show_others = get_forecast_view_flags(
+            tournament_status=forecast.tournament.status,
+            user_id=user_id,
+            admin_ids=admin_ids,
+        )
 
         kb = view_forecast_kb(
             back_callback="forecasts:active",
@@ -287,11 +272,6 @@ async def cq_edit_forecast_start(callback_query: types.CallbackQuery):  # ADDED 
     )
 
 
-import logging
-
-# ... imports
-
-
 @router.callback_query(F.data.startswith("forecasts:history:"))
 async def show_forecast_history(callback_query: types.CallbackQuery):  # ADDED async
     """
@@ -300,15 +280,8 @@ async def show_forecast_history(callback_query: types.CallbackQuery):  # ADDED a
     await callback_query.answer()
     page = int(callback_query.data.split(":")[2])
     user_id = callback_query.from_user.id
-    logging.info(f"DEBUG: Fetching history for user {user_id}, page {page}")
 
     async with async_session() as session:
-        # Debug: Check if user exists and has any forecasts
-        total_forecasts = await session.scalar(
-            select(func.count(Forecast.id)).where(Forecast.user_id == user_id)
-        )
-        logging.info(f"DEBUG: Total forecasts for user {user_id}: {total_forecasts}")
-
         history_stmt = (
             select(Forecast)
             .options(joinedload(Forecast.tournament))
@@ -322,33 +295,7 @@ async def show_forecast_history(callback_query: types.CallbackQuery):  # ADDED a
         result = await session.execute(history_stmt)
         forecasts = result.scalars().all()
 
-        logging.info(f"DEBUG: Found {len(forecasts)} FINISHED forecasts.")
-
         if not forecasts:
-            # Fallback: Check if we have string mismatch for Enum
-            # This is a hack, but helpful for debugging SQLite
-            logging.info("DEBUG: Forecasts list is empty. Checking raw statuses...")
-
-            debug_res = await session.execute(
-                select(Forecast).where(Forecast.user_id == user_id)
-            )
-            debug_forecasts = debug_res.scalars().all()
-
-            if debug_forecasts:
-                t_ids = [f.tournament_id for f in debug_forecasts]
-                all_t_res = await session.execute(
-                    select(Tournament).where(Tournament.id.in_(t_ids))
-                )
-                all_t = all_t_res.scalars().all()
-                for t in all_t:
-                    logging.info(
-                        f"DEBUG: Tournament {t.id} status: {t.status} (type: {type(t.status)})"
-                    )
-            else:
-                logging.info(
-                    "DEBUG: No forecasts found for user at all (even ignoring status)."
-                )
-
             await callback_query.message.answer("У вас нет прошлых прогнозов.")
             return
 
@@ -392,59 +339,14 @@ async def show_specific_history(callback_query: types.CallbackQuery):  # ADDED a
         result = await session.execute(players_stmt)
         players_map = {p.id: p for p in result.scalars()}
 
-        # Format message
         tournament_date = forecast.tournament.date.strftime("%d.%m.%Y")
-
-        # 1. Actual Results Block
-        results_dict = {int(k): int(v) for k, v in forecast.tournament.results.items()}
-        sorted_results = sorted(results_dict.items(), key=lambda item: item[1])
-
-        t_name = html.escape(forecast.tournament.name)
-        results_text = f"<b>🏆 Итоги турнира «{t_name}» ({tournament_date})</b>\n\n"
-        for pid, rank in sorted_results:
-            p_obj = players_map.get(pid)
-            p_name = html.escape(p_obj.full_name) if p_obj else "Неизвестный"
-            medal = get_medal_str(rank)
-            results_text += f"{medal} {p_name}\n"
-
-        # 2. User Forecast Block (Detailed)
-        prediction_text = f"\n<b>📜 Ваш прогноз:</b>\n"
-
-        current_hits = 0
-        for i, pid in enumerate(pred_ids):
-            predicted_rank = i + 1
-            p_obj = players_map.get(pid)
-            p_name = html.escape(p_obj.full_name) if p_obj else "Неизвестный"
-
-            line_points = 0
-            extra_info = ""
-
-            if pid in results_dict:
-                actual_rank = results_dict[pid]
-                diff = abs(predicted_rank - actual_rank)
-
-                if diff == 0:
-                    line_points = 5
-                    extra_info = " (🎯 Точно!)"
-                    current_hits += 1
-                else:
-                    line_points = 1
-                    extra_info = f" (факт: {actual_rank})"
-            else:
-                line_points = 0
-                extra_info = " (не в топе)"
-
-            prediction_text += (
-                f"{i + 1}. {p_name}{extra_info} — <b>+{line_points}</b>\n"
-            )
-
-        if current_hits == len(pred_ids) and len(pred_ids) > 0:
-            prediction_text += "\n🎉 <b>БОНУС: +15 очков за идеальный прогноз!</b>\n"
-
-        final_text = (
-            results_text
-            + prediction_text
-            + f"\n<b>💰 Итого очков:</b> {forecast.points_earned or 0}"
+        final_text = build_history_details_text(
+            tournament_name=forecast.tournament.name,
+            tournament_date_str=tournament_date,
+            pred_ids=pred_ids,
+            results=forecast.tournament.results,
+            players_map=players_map,
+            points_earned=forecast.points_earned,
         )
 
         # Pass tournament_id to enable 'Other Forecasts' button
