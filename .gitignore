@@ -1,21 +1,33 @@
 # Environments
 venv/
+.venv/
 .env
 
 # Databases
 app.db
+app1.db
 
 # IDEs
 .idea/
+.vscode/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.ruff_cache/
 
 project-analysis/
 
 # Local Cloudflare tooling
 cloudflare_worker/.wrangler/
 cloudflare_worker/wrangler.toml
+
+# Local package archives
+*.tgz
+
+.tmp-omo
+.tmp-omo-run
+

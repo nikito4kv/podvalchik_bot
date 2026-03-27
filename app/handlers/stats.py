@@ -1,7 +1,8 @@
-import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from html import escape
 from time import perf_counter
+from typing import cast
 
 from aiogram import Bot, F, Router, types
 from aiogram.fsm.context import FSMContext
@@ -22,37 +23,161 @@ from app.db.models import (
 from app.db.session import async_session
 from app.keyboards.inline import cancel_fsm_kb
 from app.states.user_states import LeaderboardState
-from app.utils.detailed_stats_generator import generate_detailed_season_image
-from app.utils.formatting import format_breadcrumbs, get_user_rank
-from app.utils.image_generator import (
-    generate_leaderboard_image,
-    generate_user_profile_image,
+from app.utils.formatting import (
+    format_breadcrumbs,
+    format_detailed_season_rows,
+    format_leaderboard_entries,
+    format_user_profile_text,
+    get_user_rank,
+    split_text_chunks,
 )
 from app.utils.leaderboard_data import (
     build_daily_leaderboard_snapshot,
     build_detailed_season_snapshot,
 )
 from app.utils.stats_calculator import calculate_user_tournament_streaks
-from app.utils.telegram_media import send_or_update_photo
 
 
 LOGGER = logging.getLogger(__name__)
 router = Router()
 
 
-async def render_photo_bytes(renderer, *args, filename: str) -> tuple[bytes, float]:
-    started = perf_counter()
-    img_buffer = await asyncio.to_thread(renderer, *args)
-    photo_bytes = img_buffer.getvalue()
-    render_ms = (perf_counter() - started) * 1000
-    LOGGER.info(
-        "stats.image.render.complete renderer=%s filename=%s size_bytes=%s duration_ms=%.3f",
-        renderer.__name__,
-        filename,
-        len(photo_bytes),
-        render_ms,
+async def delete_message_safe(bot: Bot, chat_id: int, message_id: int):
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as exc:
+        LOGGER.warning(
+            "stats.text.cleanup_failed chat_id=%s message_id=%s error=%s",
+            chat_id,
+            message_id,
+            exc,
+        )
+
+
+def require_message(callback: types.CallbackQuery) -> types.Message:
+    message = callback.message
+    if not isinstance(message, types.Message):
+        raise RuntimeError("Callback message is unavailable")
+    return message
+
+
+def require_bot(bot: Bot | None) -> Bot:
+    if bot is None:
+        raise RuntimeError("Bot instance is unavailable")
+    return bot
+
+
+def require_callback_data(callback: types.CallbackQuery) -> str:
+    data = callback.data
+    if data is None:
+        raise RuntimeError("Callback data is unavailable")
+    return data
+
+
+async def prepare_loading_message(
+    message_or_cb: types.Message | types.CallbackQuery, loading_text: str
+) -> types.Message:
+    if isinstance(message_or_cb, types.CallbackQuery):
+        await message_or_cb.answer()
+        source_message = require_message(message_or_cb)
+        bot = require_bot(message_or_cb.bot)
+        if source_message.content_type == types.ContentType.TEXT:
+            await source_message.edit_text(loading_text, reply_markup=None)
+            return source_message
+
+        loading_message = await bot.send_message(
+            source_message.chat.id,
+            loading_text,
+        )
+        await delete_message_safe(
+            bot,
+            source_message.chat.id,
+            source_message.message_id,
+        )
+        return loading_message
+
+    return await message_or_cb.answer(loading_text)
+
+
+async def send_or_update_text(
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    reply_markup: types.InlineKeyboardMarkup | None = None,
+    message_to_edit: types.Message | None = None,
+) -> types.Message:
+    chunks = split_text_chunks(text)
+
+    if (
+        message_to_edit is not None
+        and message_to_edit.content_type == types.ContentType.TEXT
+    ):
+        await message_to_edit.edit_text(
+            chunks[0],
+            reply_markup=reply_markup if len(chunks) == 1 else None,
+            parse_mode="HTML",
+        )
+        anchor_message = message_to_edit
+    else:
+        anchor_message = await bot.send_message(
+            chat_id,
+            chunks[0],
+            reply_markup=reply_markup if len(chunks) == 1 else None,
+            parse_mode="HTML",
+        )
+        if message_to_edit is not None:
+            await delete_message_safe(bot, chat_id, message_to_edit.message_id)
+
+    last_message = anchor_message
+    for index, chunk in enumerate(chunks[1:], start=1):
+        last_message = await bot.send_message(
+            chat_id,
+            chunk,
+            reply_markup=reply_markup if index == len(chunks) - 1 else None,
+            parse_mode="HTML",
+        )
+
+    return last_message
+
+
+def build_leaderboard_text(
+    breadcrumbs: list[str],
+    title: str,
+    leaders: list[dict],
+    subtitle_lines: list[str] | None = None,
+) -> str:
+    sections = [format_breadcrumbs(breadcrumbs), f"<b>{escape(title)}</b>"]
+    if subtitle_lines:
+        sections.append("\n".join(subtitle_lines))
+    sections.append(format_leaderboard_entries(leaders))
+    return "\n\n".join(section for section in sections if section)
+
+
+def build_detailed_season_text(
+    season_number: int,
+    date_range: str,
+    columns: list[str],
+    rows: list[dict],
+) -> str:
+    header = "\n\n".join(
+        [
+            format_breadcrumbs(
+                [
+                    "Главная",
+                    "Рейтинг клуба",
+                    "История сезонов",
+                    f"Сезон #{season_number}",
+                    "Детально",
+                ]
+            ),
+            f"<b>📊 Детальная статистика сезона #{season_number}</b>",
+            f"<i>{escape(date_range)}</i>",
+        ]
     )
-    return photo_bytes, render_ms
+    blocks = format_detailed_season_rows(columns, rows)
+    if not blocks:
+        return header
+    return "\n\n".join([header, *blocks])
 
 
 def leaderboard_kb(current_view: str = "season"):
@@ -175,7 +300,7 @@ async def build_user_profile_data(
             return None
 
         current_streak, max_streak = await calculate_user_tournament_streaks(
-            session, user.id
+            session, user_id
         )
         rank_subquery = select(
             User.id,
@@ -195,13 +320,16 @@ async def build_user_profile_data(
             select(rank_subquery.c.rank_val).where(rank_subquery.c.id == user.id)
         )
 
-        tournaments_played = user.tournaments_played or 0
+        tournaments_played = cast(int, user.tournaments_played or 0)
+        total_points = cast(int, user.total_points or 0)
+        perfect_tournaments = cast(int, user.perfect_tournaments or 0)
+        exact_guesses = cast(int, user.exact_guesses or 0)
         avg_score = (
-            round(user.total_points / tournaments_played, 1)
+            round(total_points / tournaments_played, 1)
             if tournaments_played > 0
             else 0.0
         )
-        rank_title_full = get_user_rank(user.total_points)
+        rank_title_full = get_user_rank(total_points)
         parts = rank_title_full.split()
         rank_title = parts[-1] if len(parts) > 1 else rank_title_full
 
@@ -209,12 +337,12 @@ async def build_user_profile_data(
             "full_name": display_name or user.full_name,
             "rank_title": rank_title,
             "league_emoji": "",
-            "total_points": user.total_points,
+            "total_points": total_points,
             "rank_pos": current_rank,
             "played": tournaments_played,
             "avg_score": avg_score,
-            "perfects": user.perfect_tournaments or 0,
-            "exacts": user.exact_guesses or 0,
+            "perfects": perfect_tournaments,
+            "exacts": exact_guesses,
             "current_streak": current_streak,
             "max_streak": max_streak,
         }
@@ -223,42 +351,40 @@ async def build_user_profile_data(
 @router.message(F.text == "📊 Моя статистика")
 async def handle_my_stats(message: types.Message):
     started = perf_counter()
+    from_user = message.from_user
+    if from_user is None:
+        return
+
     loading_message = await message.answer("⏳ Собираю статистику...")
 
-    user_data = await build_user_profile_data(
-        message.from_user.id, message.from_user.full_name
-    )
+    user_data = await build_user_profile_data(from_user.id, from_user.full_name)
     if user_data is None:
         await loading_message.edit_text(
             "Не удалось найти вашу статистику. Попробуйте /start"
         )
-        LOGGER.warning("stats.request.user_missing user_id=%s", message.from_user.id)
+        LOGGER.warning("stats.request.user_missing user_id=%s", from_user.id)
         return
 
-    photo_bytes, render_ms = await render_photo_bytes(
-        generate_user_profile_image,
-        user_data,
-        filename="my_stats.png",
+    text = "\n\n".join(
+        [
+            format_breadcrumbs(["Главная", "Моя статистика"]),
+            format_user_profile_text(user_data),
+        ]
     )
-
-    await send_or_update_photo(
-        bot=message.bot,
+    await send_or_update_text(
+        bot=require_bot(message.bot),
         chat_id=message.chat.id,
-        photo_bytes=photo_bytes,
-        filename="my_stats.png",
-        caption=f"📊 Статистика игрока <b>{message.from_user.full_name}</b>",
+        text=text,
         message_to_edit=loading_message,
     )
 
     duration_ms = (perf_counter() - started) * 1000
     LOGGER.info(
-        "stats.request.complete user_id=%s duration_ms=%.3f db_writes=0 current_streak=%s max_streak=%s render_ms=%.3f image_size_bytes=%s",
-        message.from_user.id,
+        "stats.request.complete user_id=%s duration_ms=%.3f db_writes=0 current_streak=%s max_streak=%s output=text",
+        from_user.id,
         duration_ms,
         user_data["current_streak"],
         user_data["max_streak"],
-        render_ms,
-        len(photo_bytes),
     )
 
 
@@ -267,47 +393,18 @@ async def handle_leaderboard(message: types.Message):
     await show_seasonal_leaderboard(message)
 
 
-async def send_leaderboard_image(
-    chat_id: int,
-    photo_bytes: bytes,
-    filename: str,
-    caption: str,
-    reply_markup: types.InlineKeyboardMarkup,
-    bot: Bot,
-    message_to_edit: types.Message | None = None,
-):
-    await send_or_update_photo(
-        bot=bot,
-        chat_id=chat_id,
-        photo_bytes=photo_bytes,
-        filename=filename,
-        caption=caption,
-        reply_markup=reply_markup,
-        message_to_edit=message_to_edit,
-    )
-
-
 async def show_seasonal_leaderboard(message_or_cb: types.Message | types.CallbackQuery):
     is_callback = isinstance(message_or_cb, types.CallbackQuery)
-    chat_id = (
-        message_or_cb.chat.id if not is_callback else message_or_cb.message.chat.id
-    )
-    bot_instance = message_or_cb.bot
-
-    target_message = None
+    bot_instance = require_bot(message_or_cb.bot)
     if is_callback:
-        await message_or_cb.answer()
-        if message_or_cb.message.content_type == types.ContentType.PHOTO:
-            target_message = message_or_cb.message
-            await target_message.edit_caption(
-                caption="⏳ Загружаю рейтинг...", reply_markup=None
-            )
-        else:
-            target_message = await bot_instance.send_message(
-                chat_id, "⏳ Загружаю рейтинг..."
-            )
+        source_message = require_message(message_or_cb)
+        chat_id = source_message.chat.id
     else:
-        target_message = await message_or_cb.answer("⏳ Загружаю рейтинг...")
+        chat_id = message_or_cb.chat.id
+
+    target_message = await prepare_loading_message(
+        message_or_cb, "⏳ Загружаю рейтинг..."
+    )
 
     async with async_session() as session:
         season_number = get_current_season_number()
@@ -356,28 +453,20 @@ async def show_seasonal_leaderboard(message_or_cb: types.Message | types.Callbac
                     }
                 )
 
-    photo_bytes, _ = await render_photo_bytes(
-        generate_leaderboard_image,
-        f"СЕЗОН #{season_number}",
+    text = build_leaderboard_text(
+        ["Главная", "Рейтинг клуба", "Текущий сезон"],
+        f"📅 Текущий сезон #{season_number}",
         leaders_data,
-        filename="season_top.png",
+        subtitle_lines=[
+            f"<i>{start_date.strftime('%d.%m')} — {end_date.strftime('%d.%m')}</i>",
+            "Рейтинг обновляется в реальном времени после каждого турнира.",
+        ],
     )
-    caption_breadcrumbs = format_breadcrumbs(
-        ["Главная", "Рейтинг клуба", "Текущий сезон"]
-    )
-    caption = (
-        f"{caption_breadcrumbs}\n\n"
-        f"<b>📅 Текущий сезон #{season_number}</b>\n"
-        f"<i>{start_date.strftime('%d.%m')} — {end_date.strftime('%d.%m')}</i>\n\n"
-        "Рейтинг обновляется в реальном времени после каждого турнира."
-    )
-    await send_leaderboard_image(
-        chat_id=chat_id,
-        photo_bytes=photo_bytes,
-        filename="season_top.png",
-        caption=caption,
-        reply_markup=leaderboard_kb("season"),
+    await send_or_update_text(
         bot=bot_instance,
+        chat_id=chat_id,
+        text=text,
+        reply_markup=leaderboard_kb("season"),
         message_to_edit=target_message,
     )
 
@@ -389,19 +478,10 @@ async def cq_leaderboard_season(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "leaderboard:global")
 async def cq_leaderboard_global(callback: types.CallbackQuery):
-    chat_id = callback.message.chat.id
-    bot_instance = callback.bot
-    await callback.answer()
-
-    if callback.message.content_type == types.ContentType.PHOTO:
-        target_message = callback.message
-        await target_message.edit_caption(
-            caption="⏳ Загружаю рейтинг...", reply_markup=None
-        )
-    else:
-        target_message = await bot_instance.send_message(
-            chat_id, "⏳ Загружаю рейтинг..."
-        )
+    message = require_message(callback)
+    chat_id = message.chat.id
+    bot_instance = require_bot(callback.bot)
+    target_message = await prepare_loading_message(callback, "⏳ Загружаю рейтинг...")
 
     async with async_session() as session:
         top_users = (
@@ -419,39 +499,31 @@ async def cq_leaderboard_global(callback: types.CallbackQuery):
     leaders_data = []
     for user in top_users:
         name = user.full_name or user.username or f"id:{user.id}"
-        rank_str = get_user_rank(user.total_points)
+        total_points = cast(int, user.total_points or 0)
+        rank_str = get_user_rank(total_points)
         league_emoji = rank_str.split()[0] if rank_str else ""
         leaders_data.append(
             {
                 "user_id": user.id,
                 "name": name,
-                "points": user.total_points,
-                "played": user.tournaments_played,
-                "perfects": user.perfect_tournaments,
+                "points": total_points,
+                "played": cast(int, user.tournaments_played or 0),
+                "perfects": cast(int, user.perfect_tournaments or 0),
                 "league_emoji": league_emoji,
             }
         )
 
-    photo_bytes, _ = await render_photo_bytes(
-        generate_leaderboard_image,
-        "ЗА ВСЕ ВРЕМЯ",
+    text = build_leaderboard_text(
+        ["Главная", "Рейтинг клуба", "За все время"],
+        "🌍 Глобальный рейтинг клуба",
         leaders_data,
-        filename="global_top.png",
+        subtitle_lines=["Сумма очков за всю историю."],
     )
-    caption_breadcrumbs = format_breadcrumbs(
-        ["Главная", "Рейтинг клуба", "За все время"]
-    )
-    caption = (
-        f"{caption_breadcrumbs}\n\n"
-        "<b>🌍 Глобальный рейтинг клуба</b>\nСумма очков за всю историю."
-    )
-    await send_leaderboard_image(
-        chat_id=chat_id,
-        photo_bytes=photo_bytes,
-        filename="global_top.png",
-        caption=caption,
-        reply_markup=leaderboard_kb("global"),
+    await send_or_update_text(
         bot=bot_instance,
+        chat_id=chat_id,
+        text=text,
+        reply_markup=leaderboard_kb("global"),
         message_to_edit=target_message,
     )
 
@@ -465,12 +537,16 @@ async def cq_leaderboard_history_list(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("leaderboard:history:page:"))
 async def cq_leaderboard_history_page(callback: types.CallbackQuery):
     await callback.answer()
-    await show_history_list(callback, int(callback.data.split(":")[-1]))
+    callback_data = require_callback_data(callback)
+    await show_history_list(callback, int(callback_data.split(":")[-1]))
 
 
 async def show_history_list(callback: types.CallbackQuery, page: int):
-    if callback.message.content_type == types.ContentType.PHOTO:
-        await callback.message.delete()
+    message = require_message(callback)
+    if message.content_type == types.ContentType.PHOTO:
+        await delete_message_safe(
+            require_bot(callback.bot), message.chat.id, message.message_id
+        )
 
     async with async_session() as session:
         seasons = (
@@ -480,41 +556,44 @@ async def show_history_list(callback: types.CallbackQuery, page: int):
         )
 
     if not seasons:
-        await callback.message.answer("История сезонов пуста.")
+        await message.answer("История сезонов пуста.", parse_mode="HTML")
         return
 
     text = (
         f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'История сезонов'])}\n\n"
         "<b>📜 Архив сезонов</b>\nВыберите сезон для просмотра итогов:"
     )
-    if callback.message.content_type == types.ContentType.TEXT:
-        await callback.message.edit_text(
-            text, reply_markup=season_history_kb(seasons, page)
+    seasons_list = list(seasons)
+    if message.content_type == types.ContentType.TEXT:
+        await message.edit_text(
+            text, reply_markup=season_history_kb(seasons_list, page), parse_mode="HTML"
         )
     else:
-        await callback.message.answer(
-            text, reply_markup=season_history_kb(seasons, page)
+        await message.answer(
+            text,
+            reply_markup=season_history_kb(seasons_list, page),
+            parse_mode="HTML",
         )
 
 
 @router.callback_query(F.data.startswith("leaderboard:history:view:"))
 async def cq_leaderboard_history_view(callback: types.CallbackQuery):
-    chat_id = callback.message.chat.id
-    bot_instance = callback.bot
-    await callback.answer()
+    message = require_message(callback)
+    chat_id = message.chat.id
+    bot_instance = require_bot(callback.bot)
+    target_message = await prepare_loading_message(callback, "⏳ Загружаю архив...")
 
-    if callback.message.content_type == types.ContentType.TEXT:
-        target_message = await callback.message.edit_text("⏳ Загружаю архив...")
-    else:
-        target_message = await callback.message.edit_caption(
-            caption="⏳ Загружаю архив..."
-        )
-
-    season_id = int(callback.data.split(":")[-1])
+    callback_data = require_callback_data(callback)
+    season_id = int(callback_data.split(":")[-1])
     async with async_session() as session:
         season = await session.get(Season, season_id)
         if season is None:
-            await callback.message.answer("❌ Сезон не найден.")
+            await send_or_update_text(
+                bot=bot_instance,
+                chat_id=chat_id,
+                text="❌ Сезон не найден.",
+                message_to_edit=target_message,
+            )
             return
 
         results = (
@@ -534,7 +613,7 @@ async def cq_leaderboard_history_view(callback: types.CallbackQuery):
     leaders_data = []
     for result in results:
         name = "Unknown"
-        if result.user_snapshot and isinstance(result.user_snapshot, dict):
+        if isinstance(result.user_snapshot, dict):
             name = (
                 result.user_snapshot.get("full_name")
                 or result.user_snapshot.get("username")
@@ -543,33 +622,27 @@ async def cq_leaderboard_history_view(callback: types.CallbackQuery):
         if result.user is not None:
             name = result.user.full_name or result.user.username or name
 
-        rank_str = get_user_rank(result.points)
+        points = cast(int, result.points or 0)
+        rank_str = get_user_rank(points)
         league_emoji = rank_str.split()[0] if rank_str else ""
         leaders_data.append(
             {
                 "user_id": result.user_id,
                 "name": name,
-                "points": result.points,
-                "played": result.tournaments_played,
+                "points": points,
+                "played": cast(int, result.tournaments_played or 0),
                 "perfects": 0,
                 "league_emoji": league_emoji,
             }
         )
 
-    filename = f"season_{season.number}.png"
-    photo_bytes, _ = await render_photo_bytes(
-        generate_leaderboard_image,
-        f"СЕЗОН #{season.number}",
+    text = build_leaderboard_text(
+        ["Главная", "Рейтинг клуба", "История сезонов", f"Сезон #{season.number}"],
+        f"📜 Итоги сезона #{season.number}",
         leaders_data,
-        filename=filename,
-    )
-    caption_breadcrumbs = format_breadcrumbs(
-        ["Главная", "Рейтинг клуба", "История сезонов", f"Сезон #{season.number}"]
-    )
-    caption = (
-        f"{caption_breadcrumbs}\n\n"
-        f"<b>📜 Итоги сезона #{season.number}</b>\n"
-        f"<i>{season.start_date.strftime('%d.%m.%Y')} — {season.end_date.strftime('%d.%m.%Y')}</i>"
+        subtitle_lines=[
+            f"<i>{season.start_date.strftime('%d.%m.%Y')} — {season.end_date.strftime('%d.%m.%Y')}</i>"
+        ],
     )
 
     builder = InlineKeyboardBuilder()
@@ -580,13 +653,11 @@ async def cq_leaderboard_history_view(callback: types.CallbackQuery):
     builder.button(text="↩️ К списку сезонов", callback_data="leaderboard:history:list")
     builder.adjust(1)
 
-    await send_leaderboard_image(
-        chat_id=chat_id,
-        photo_bytes=photo_bytes,
-        filename=filename,
-        caption=caption,
-        reply_markup=builder.as_markup(),
+    await send_or_update_text(
         bot=bot_instance,
+        chat_id=chat_id,
+        text=text,
+        reply_markup=builder.as_markup(),
         message_to_edit=target_message,
     )
 
@@ -618,126 +689,125 @@ async def generate_and_send_daily_stats(
 
     kb = leaderboard_daily_modes_kb(viewing_mode=viewing_mode)
     if not snapshot["leaders"]:
-        caption_breadcrumbs = format_breadcrumbs(
-            ["Главная", "Рейтинг клуба", "Рейтинг дня"]
+        text = build_leaderboard_text(
+            ["Главная", "Рейтинг клуба", "Рейтинг дня"],
+            f"📅 Нет данных за {target_date.strftime('%d.%m.%Y')}",
+            [],
+            subtitle_lines=[
+                "В этот день турниров не проводилось или прогнозы отсутствуют."
+            ],
         )
-        text = (
-            f"{caption_breadcrumbs}\n\n"
-            f"📅 <b>Нет данных за {target_date.strftime('%d.%m.%Y')}</b>\n"
-            "В этот день турниров не проводилось или прогнозы отсутствуют."
+        await send_or_update_text(
+            bot=bot_instance,
+            chat_id=chat_id,
+            text=text,
+            reply_markup=kb,
+            message_to_edit=message_to_edit,
         )
-        if message_to_edit and message_to_edit.content_type == types.ContentType.TEXT:
-            await message_to_edit.edit_text(text, reply_markup=kb)
-        else:
-            await bot_instance.send_message(chat_id, text, reply_markup=kb)
         return
 
-    filename = f"daily_{target_date}.png"
-    photo_bytes, _ = await render_photo_bytes(
-        generate_leaderboard_image,
-        f"РЕЙТИНГ {target_date.strftime('%d.%m')}",
+    text = build_leaderboard_text(
+        ["Главная", "Рейтинг клуба", "Рейтинг дня"],
+        f"📆 Рейтинг за {target_date.strftime('%d.%m.%Y')}",
         snapshot["leaders"],
-        filename=filename,
+        subtitle_lines=[
+            f"Турниров: <b>{snapshot['tournament_count']}</b>",
+            f"Участников: <b>{len(snapshot['leaders'])}</b>",
+        ],
     )
-    caption_breadcrumbs = format_breadcrumbs(
-        ["Главная", "Рейтинг клуба", "Рейтинг дня"]
-    )
-    caption = (
-        f"{caption_breadcrumbs}\n\n"
-        f"<b>📆 Рейтинг за {target_date.strftime('%d.%m.%Y')}</b>\n"
-        f"Турниров: {snapshot['tournament_count']}\n"
-        f"Участников: {len(snapshot['leaders'])}"
-    )
-
-    await send_leaderboard_image(
-        chat_id=chat_id,
-        photo_bytes=photo_bytes,
-        filename=filename,
-        caption=caption,
-        reply_markup=kb,
+    await send_or_update_text(
         bot=bot_instance,
+        chat_id=chat_id,
+        text=text,
+        reply_markup=kb,
         message_to_edit=message_to_edit,
     )
 
 
 @router.callback_query(F.data == "leaderboard:daily:today")
 async def cq_daily_today(callback: types.CallbackQuery):
-    await callback.answer()
     import pytz
 
+    message = require_message(callback)
     tz = pytz.timezone("Asia/Tbilisi")
     today = datetime.now(tz).date()
-    if callback.message.content_type == types.ContentType.TEXT:
-        target_message = await callback.message.edit_text(
-            "⏳ Считаю очки за сегодня..."
-        )
-    else:
-        target_message = callback.message
-        await target_message.edit_caption("⏳ Считаю очки за сегодня...")
+    target_message = await prepare_loading_message(
+        callback, "⏳ Считаю очки за сегодня..."
+    )
     await generate_and_send_daily_stats(
-        callback.message.chat.id, callback.bot, today, target_message
+        message.chat.id, require_bot(callback.bot), today, target_message
     )
 
 
 @router.callback_query(F.data == "leaderboard:daily:yesterday")
 async def cq_daily_yesterday(callback: types.CallbackQuery):
-    await callback.answer()
     import pytz
 
+    message = require_message(callback)
     tz = pytz.timezone("Asia/Tbilisi")
     today = datetime.now(tz).date()
     yesterday = today - timedelta(days=1)
-    if callback.message.content_type == types.ContentType.TEXT:
-        target_message = await callback.message.edit_text("⏳ Считаю очки за вчера...")
-    else:
-        target_message = callback.message
-        await target_message.edit_caption("⏳ Считаю очки за вчера...")
+    target_message = await prepare_loading_message(
+        callback, "⏳ Считаю очки за вчера..."
+    )
     await generate_and_send_daily_stats(
-        callback.message.chat.id, callback.bot, yesterday, target_message
+        message.chat.id, require_bot(callback.bot), yesterday, target_message
     )
 
 
 @router.callback_query(F.data == "leaderboard:daily:select")
 async def cq_daily_select(callback: types.CallbackQuery, state: FSMContext):
+    message = require_message(callback)
     await callback.answer()
     text = (
         f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня'])}\n\n"
         "📅 Выберите день или введите дату вручную:"
     )
-    if callback.message.content_type == types.ContentType.TEXT:
-        await callback.message.edit_text(text, reply_markup=daily_date_selection_kb())
+    if message.content_type == types.ContentType.TEXT:
+        await message.edit_text(text, reply_markup=daily_date_selection_kb())
     else:
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=daily_date_selection_kb())
+        await delete_message_safe(
+            require_bot(callback.bot), message.chat.id, message.message_id
+        )
+        await message.answer(text, reply_markup=daily_date_selection_kb())
 
 
 @router.callback_query(F.data.startswith("leaderboard:daily:date_pick:"))
 async def cq_daily_date_picked(callback: types.CallbackQuery):
-    await callback.answer()
-    picked_date = date.fromisoformat(callback.data.split(":")[3])
-    target_message = await callback.message.edit_text(
-        f"⏳ Считаю очки за {picked_date.strftime('%d.%m.%Y')}..."
+    message = require_message(callback)
+    callback_data = require_callback_data(callback)
+    picked_date = date.fromisoformat(callback_data.split(":")[3])
+    target_message = await prepare_loading_message(
+        callback, f"⏳ Считаю очки за {picked_date.strftime('%d.%m.%Y')}..."
     )
     await generate_and_send_daily_stats(
-        callback.message.chat.id, callback.bot, picked_date, target_message
+        message.chat.id, require_bot(callback.bot), picked_date, target_message
     )
 
 
 @router.callback_query(F.data == "leaderboard:daily:date_input_manual")
 async def cq_daily_date_input_manual(callback: types.CallbackQuery, state: FSMContext):
+    message = require_message(callback)
     await callback.answer()
-    await callback.message.edit_text(
-        (
-            f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня', 'Ввод даты'])}\n\n"
-            "✍️ Введите дату в формате <b>ДД.ММ.ГГГГ</b> (например, 13.12.2025):"
-        ),
-        reply_markup=cancel_fsm_kb(),
+    text = (
+        f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня', 'Ввод даты'])}\n\n"
+        "✍️ Введите дату в формате <b>ДД.ММ.ГГГГ</b> (например, 13.12.2025):"
     )
+    if message.content_type == types.ContentType.TEXT:
+        await message.edit_text(text, reply_markup=cancel_fsm_kb(), parse_mode="HTML")
+    else:
+        await delete_message_safe(
+            require_bot(callback.bot), message.chat.id, message.message_id
+        )
+        await message.answer(text, reply_markup=cancel_fsm_kb(), parse_mode="HTML")
     await state.set_state(LeaderboardState.waiting_for_date)
 
 
 @router.message(LeaderboardState.waiting_for_date)
 async def process_date_input(message: types.Message, state: FSMContext):
+    if message.text is None:
+        return
+
     text = message.text.strip()
     try:
         target_date = datetime.strptime(text, "%d.%m.%Y").date()
@@ -748,52 +818,63 @@ async def process_date_input(message: types.Message, state: FSMContext):
                 "❌ Неверный формат. Попробуйте еще раз (ДД.ММ.ГГГГ):"
             ),
             reply_markup=cancel_fsm_kb(),
+            parse_mode="HTML",
         )
         return
 
     await state.clear()
-    loading_message = await message.answer(f"⏳ Считаю очки за {text}...")
+    loading_message = await message.answer(
+        f"⏳ Считаю очки за {text}...",
+        parse_mode="HTML",
+    )
     await generate_and_send_daily_stats(
-        message.chat.id, message.bot, target_date, loading_message
+        message.chat.id, require_bot(message.bot), target_date, loading_message
     )
 
 
 @router.callback_query(F.data == "fsm_cancel", LeaderboardState.waiting_for_date)
 async def cancel_date_input(callback: types.CallbackQuery, state: FSMContext):
+    message = require_message(callback)
     await state.clear()
     await callback.answer("Ввод отменен")
-    await callback.message.edit_text(
+    await message.edit_text(
         (
             f"{format_breadcrumbs(['Главная', 'Рейтинг клуба', 'Рейтинг дня'])}\n\n"
             "<b>📆 Рейтинг дня</b>\nВыберите, за какой день вы хотите посмотреть статистику:"
         ),
         reply_markup=leaderboard_daily_modes_kb(),
+        parse_mode="HTML",
     )
 
 
 @router.callback_query(F.data.startswith("leaderboard:history:detailed:"))
 async def cq_leaderboard_history_detailed(callback: types.CallbackQuery):
-    season_id = int(callback.data.split(":")[-1])
-    chat_id = callback.message.chat.id
-    bot_instance = callback.bot
-    await callback.answer()
-
-    try:
-        target_message = await callback.message.edit_caption(
-            caption="⏳ Генерирую детальную статистику..."
-        )
-    except Exception:
-        target_message = callback.message
+    message = require_message(callback)
+    callback_data = require_callback_data(callback)
+    season_id = int(callback_data.split(":")[-1])
+    chat_id = message.chat.id
+    bot_instance = require_bot(callback.bot)
+    target_message = await prepare_loading_message(
+        callback, "⏳ Генерирую детальную статистику..."
+    )
 
     async with async_session() as session:
         snapshot = await build_detailed_season_snapshot(session, season_id)
 
     if snapshot is None:
-        await callback.message.answer("❌ Сезон не найден.")
+        await send_or_update_text(
+            bot=bot_instance,
+            chat_id=chat_id,
+            text="❌ Сезон не найден.",
+            message_to_edit=target_message,
+        )
         return
     if not snapshot["tournaments"]:
-        await callback.message.edit_caption(
-            caption="⚠ В этом сезоне не было завершенных турниров."
+        await send_or_update_text(
+            bot=bot_instance,
+            chat_id=chat_id,
+            text="⚠ В этом сезоне не было завершенных турниров.",
+            message_to_edit=target_message,
         )
         return
 
@@ -802,24 +883,20 @@ async def cq_leaderboard_history_detailed(callback: types.CallbackQuery):
         f"{season.start_date.day}.{season.start_date.month} - "
         f"{season.end_date.day}.{season.end_date.month}"
     )
-    filename = f"season_{season.number}_detailed.png"
-    photo_bytes, _ = await render_photo_bytes(
-        generate_detailed_season_image,
-        f"Сезон {season.number} ({title_dates})",
+    text = build_detailed_season_text(
+        season.number,
+        title_dates,
         snapshot["columns"],
         snapshot["rows"],
-        filename=filename,
     )
     builder = InlineKeyboardBuilder()
     builder.button(
         text="⬅ Назад к сезону", callback_data=f"leaderboard:history:view:{season.id}"
     )
-    await send_leaderboard_image(
-        chat_id=chat_id,
-        photo_bytes=photo_bytes,
-        filename=filename,
-        caption=f"<b>Детальная статистика сезона #{season.number}</b>",
-        reply_markup=builder.as_markup(),
+    await send_or_update_text(
         bot=bot_instance,
+        chat_id=chat_id,
+        text=text,
+        reply_markup=builder.as_markup(),
         message_to_edit=target_message,
     )
